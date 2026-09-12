@@ -9,14 +9,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
-/**
- * Talks to the Huawei HG8546M router's web admin panel (same endpoints the
- * browser-based admin UI uses: login.cgi, WlanBasic.asp, set.cgi).
- *
- * NOTE: this targets the WPA/WPA2-PSK + AES configuration found on this
- * router. If the router's auth mode is changed to Open/WEP/RADIUS, the save
- * step would need adjustments.
- */
 class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
 
     private val cookies = mutableMapOf<String, Cookie>()
@@ -54,7 +46,6 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
     private fun extract(regex: Regex, text: String, group: Int = 1): String? =
         regex.find(text)?.groupValues?.getOrNull(group)
 
-    /** Load the login page and grab the CSRF-like token it embeds. */
     private fun fetchLoginToken(): String {
         val req = Request.Builder().url("$baseUrl/").build()
         val body = client.newCall(req).execute().use { it.body?.string() ?: "" }
@@ -62,7 +53,6 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
             ?: throw IllegalStateException("Could not find login token on router page")
     }
 
-    /** Log in with username/password (password is base64-encoded, not hashed). */
     fun login(username: String, password: String) {
         val token = fetchLoginToken()
         val encodedPassword = Base64.encodeToString(password.toByteArray(), Base64.NO_WRAP)
@@ -76,10 +66,15 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         val req = Request.Builder().url("$baseUrl/login.cgi").post(form).build()
         client.newCall(req).execute().use {
             if (!it.isSuccessful) throw IllegalStateException("Login failed: HTTP ${it.code}")
+            val respBody = it.body?.string() ?: ""
+            if (respBody.contains("login.asp", ignoreCase = true) ||
+                respBody.contains("FailStat", ignoreCase = true)
+            ) {
+                throw IllegalStateException("Login failed - check username/password")
+            }
         }
     }
 
-    /** Read the current WiFi (2.4G) settings from WlanBasic.asp. */
     fun getWifiInfo(): WifiInfo {
         val req = Request.Builder().url("$baseUrl/html/amp/wlanbasic/WlanBasic.asp").build()
         val body = client.newCall(req).execute().use { it.body?.string() ?: "" }
@@ -88,16 +83,18 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
             Regex("stWlanWifi\\(\"[^\"]*\",\"[^\"]*\",\"[01]\",\"([^\"]*)\""), body
         ) ?: "unknown"
 
-        // Domain appears in the page source as "InternetGatewayDevice\x2eLANDevice\x2e1..."
-        // (a literal backslash-escape, not a real dot) - decode it before use.
         val rawDomain = extract(Regex("new stWlan\\(\"([^\"]+)\""), body)
         val domain = rawDomain?.replace("\\x2e", ".")
             ?: "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1"
 
         val token = extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), body)
-            ?: throw IllegalStateException("Could not find session token on WlanBasic page")
+        if (token == null) {
+            if (body.contains("GetRandCnt")) {
+                throw IllegalStateException("Login failed - check username/password and try again")
+            }
+            throw IllegalStateException("Could not find session token on WlanBasic page")
+        }
 
-        // stWlan(domain,name,enable,ssid,wlHide,DeviceNum,wmmEnable,BeaconType,...)
         val wlanFields = Regex(
             "new stWlan\\(\"[^\"]*\",\"[^\"]*\",\"([01])\",\"[^\"]*\",\"([01])\",\"(\\d+)\",\"([01])\",\"(\\w+)\""
         ).find(body)
@@ -114,7 +111,6 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
             else -> SecurityMode.WPA_WPA2_PSK
         }
 
-        // WPS enabled state: new stWpsPin(domain, ConfigMethod, DevicePassword, PinGenerator, Enable)
         val wpsEnabled = extract(Regex("new stWpsPin\\([^)]*,\"(\\d)\"\\)"), body) == "1"
 
         return WifiInfo(
@@ -130,11 +126,6 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         )
     }
 
-    /**
-     * Change SSID, password, and other basic WiFi settings on the main 2.4G
-     * network. Pass the fields you want changed; anything unchanged should
-     * be passed back as the current value from [WifiInfo].
-     */
     fun saveWifi(
         info: WifiInfo,
         newSsid: String,
@@ -161,7 +152,6 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
             .add("y.${securityMode.authParam}", "PSKAuthentication")
             .add("y.X_HW_GroupRekey", "3600")
             .add("z.Enable", if (wpsEnabled) "1" else "0")
-            // "cover" params the official form always sends alongside the main ones
             .add("w.SsidInst", "1")
             .add("w.SSID", newSsid)
             .add("w.Enable", "1")
@@ -179,7 +169,6 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
             .add("w.WEPKeyIndex", "1")
             .add("x.X_HW_Token", info.token)
 
-        // encryption mode field name differs slightly per security mode
         val encryptionParam = when (securityMode) {
             SecurityMode.WPA_PSK -> "WPAEncryptionModes"
             SecurityMode.WPA2_PSK -> "IEEE11iEncryptionModes"
@@ -198,7 +187,6 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         }
     }
 
-    /** Turn the whole 2.4G radio on/off (separate endpoint from saveWifi). */
     fun setWifiEnabled(info: WifiInfo, enabled: Boolean) {
         val form = FormBody.Builder()
             .add("x.X_HW_WlanEnable", if (enabled) "1" else "0")
