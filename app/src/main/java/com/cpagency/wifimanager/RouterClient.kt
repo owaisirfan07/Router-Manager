@@ -58,7 +58,7 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
     private fun fetchLoginToken(): String {
         val req = Request.Builder().url("$baseUrl/").build()
         val body = client.newCall(req).execute().use { it.body?.string() ?: "" }
-        return extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), body)
+        return extract(Regex("GetRandCnt\\(\\)\\s*\\{\\s*return\\s*'([^']+)'"), body)
             ?: throw IllegalStateException("Could not find login token on router page")
     }
 
