@@ -94,12 +94,13 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         val domain = rawDomain?.replace("\\x2e", ".")
             ?: "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1"
 
-        val token = extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), body)
+               val token = extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), body)
         if (token == null) {
             if (body.contains("GetRandCnt")) {
                 throw IllegalStateException("Login failed - check username/password and try again")
             }
-            throw IllegalStateException("Could not find session token on WlanBasic page")
+            val snippet = body.take(300).replace("\n", " ")
+            throw IllegalStateException("Unexpected page: $snippet")
         }
 
         val wlanFields = Regex(
