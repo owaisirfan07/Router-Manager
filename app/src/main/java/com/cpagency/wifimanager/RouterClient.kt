@@ -23,6 +23,13 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         .cookieJar(cookieJar)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val newReq = chain.request().newBuilder()
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android) RouterManagerApp")
+                .header("Referer", "$baseUrl/")
+                .build()
+            chain.proceed(newReq)
+        }
         .build()
 
     enum class SecurityMode(val label: String, val beaconType: String, val authParam: String) {
