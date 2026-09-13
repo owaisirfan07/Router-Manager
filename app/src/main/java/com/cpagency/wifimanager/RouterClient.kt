@@ -94,13 +94,20 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         val domain = rawDomain?.replace("\\x2e", ".")
             ?: "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1"
 
-               val token = extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), body)
+        val token = extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), body)
         if (token == null) {
-            if (body.contains("GetRandCnt")) {
-                throw IllegalStateException("Login failed - check username/password and try again")
+            when {
+                body.contains("GetRandCnt") ->
+                    throw IllegalStateException("Login failed - check username/password and try again")
+                body.contains("top.location.replace") ->
+                    throw IllegalStateException("Got a redirect page instead of settings - session may not be sticking")
+                body.contains("stWlanWifi") ->
+                    throw IllegalStateException("Got the real settings page but no token field found - field format may differ")
+                else -> {
+                    val snippet = body.take(1500).replace("\n", " ")
+                    throw IllegalStateException("Unexpected page: $snippet")
+                }
             }
-            val snippet = body.take(300).replace("\n", " ")
-            throw IllegalStateException("Unexpected page: $snippet")
         }
 
         val wlanFields = Regex(
