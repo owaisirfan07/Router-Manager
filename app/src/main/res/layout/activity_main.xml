@@ -30,41 +30,7 @@
             android:textColor="@color/textSecondary"
             android:textSize="14sp" />
 
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/updateCard"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="16dp"
-            android:visibility="gone"
-            app:cardBackgroundColor="@color/warning"
-            app:cardCornerRadius="14dp"
-            app:cardElevation="0dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:id="@+id/updateText"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="A new version is available"
-                    android:textColor="#FFFFFF"
-                    android:textStyle="bold" />
-
-                <Button
-                    android:id="@+id/updateButton"
-                    style="@style/Widget.MaterialComponents.Button.TextButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Download"
-                    android:textColor="#FFFFFF" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
+        <!-- update check now shows as a popup dialog instead of a banner -->
 
         <!-- ===================== LOGIN SECTION ===================== -->
         <com.google.android.material.card.MaterialCardView
@@ -92,6 +58,9 @@
 
                 <com.google.android.material.textfield.TextInputLayout
                     style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    app:boxStrokeColor="@color/primary"
+                    app:hintTextColor="@color/primary"
+                    android:textColorHint="@color/textSecondary"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="10dp"
@@ -100,11 +69,16 @@
                         android:id="@+id/routerIpInput"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                            android:textColor="@color/textPrimary"
+                            android:textColorHint="@color/textSecondary"
                         android:text="192.168.100.1" />
                 </com.google.android.material.textfield.TextInputLayout>
 
                 <com.google.android.material.textfield.TextInputLayout
                     style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    app:boxStrokeColor="@color/primary"
+                    app:hintTextColor="@color/primary"
+                    android:textColorHint="@color/textSecondary"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="10dp"
@@ -113,11 +87,16 @@
                         android:id="@+id/usernameInput"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                            android:textColor="@color/textPrimary"
+                            android:textColorHint="@color/textSecondary"
                         android:text="telecomadmin" />
                 </com.google.android.material.textfield.TextInputLayout>
 
                 <com.google.android.material.textfield.TextInputLayout
                     style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    app:boxStrokeColor="@color/primary"
+                    app:hintTextColor="@color/primary"
+                    android:textColorHint="@color/textSecondary"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="16dp"
@@ -127,6 +106,8 @@
                         android:id="@+id/passwordInput"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                            android:textColor="@color/textPrimary"
+                            android:textColorHint="@color/textSecondary"
                         android:inputType="textPassword" />
                 </com.google.android.material.textfield.TextInputLayout>
 
@@ -173,6 +154,9 @@
 
                     <com.google.android.material.textfield.TextInputLayout
                         style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    app:boxStrokeColor="@color/primary"
+                    app:hintTextColor="@color/primary"
+                    android:textColorHint="@color/textSecondary"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginBottom="10dp"
@@ -180,11 +164,16 @@
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/ssidInput"
                             android:layout_width="match_parent"
-                            android:layout_height="wrap_content" />
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/textPrimary"
+                            android:textColorHint="@color/textSecondary" />
                     </com.google.android.material.textfield.TextInputLayout>
 
                     <com.google.android.material.textfield.TextInputLayout
                         style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    app:boxStrokeColor="@color/primary"
+                    app:hintTextColor="@color/primary"
+                    android:textColorHint="@color/textSecondary"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         app:passwordToggleEnabled="true"
@@ -193,6 +182,8 @@
                             android:id="@+id/newPasswordInput"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
+                            android:textColor="@color/textPrimary"
+                            android:textColorHint="@color/textSecondary"
                             android:inputType="textPassword" />
                     </com.google.android.material.textfield.TextInputLayout>
                 </LinearLayout>
@@ -331,6 +322,9 @@
 
                     <com.google.android.material.textfield.TextInputLayout
                         style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    app:boxStrokeColor="@color/primary"
+                    app:hintTextColor="@color/primary"
+                    android:textColorHint="@color/textSecondary"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:hint="Max Connected Devices">
@@ -338,6 +332,8 @@
                             android:id="@+id/maxDevicesInput"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
+                            android:textColor="@color/textPrimary"
+                            android:textColorHint="@color/textSecondary"
                             android:inputType="number" />
                     </com.google.android.material.textfield.TextInputLayout>
                 </LinearLayout>

@@ -10,7 +10,8 @@
         android:label="WifiManager"
         android:icon="@android:drawable/ic_dialog_info"
         android:theme="@style/Theme.RouterManager"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:forceDarkAllowed="false">
 
         <activity
             android:name=".MainActivity"

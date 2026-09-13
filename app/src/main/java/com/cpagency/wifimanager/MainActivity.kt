@@ -1,5 +1,6 @@
 package com.cpagency.wifimanager
 
+import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -45,15 +46,11 @@ class MainActivity : AppCompatActivity() {
         val maxDevicesInput = findViewById<TextInputEditText>(R.id.maxDevicesInput)
         val saveButton = findViewById<Button>(R.id.saveButton)
 
-        val updateCard = findViewById<android.view.View>(R.id.updateCard)
-        val updateText = findViewById<TextView>(R.id.updateText)
-        val updateButton = findViewById<Button>(R.id.updateButton)
-
         securityModeDropdown.setAdapter(
             ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, securityModes.map { it.label })
         )
 
-        checkForUpdate(updateCard, updateText, updateButton)
+        checkForUpdate()
 
         loginButton.setOnClickListener {
             val ip = routerIpInput.text.toString().trim()
@@ -128,16 +125,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun checkForUpdate(updateCard: android.view.View, updateText: TextView, updateButton: Button) {
+    private fun checkForUpdate() {
         val currentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0"
         CoroutineScope(Dispatchers.Main).launch {
             val update = withContext(Dispatchers.IO) { UpdateChecker.checkForUpdate(currentVersion) }
             if (update != null) {
-                updateText.text = "Version ${update.versionName} is available"
-                updateCard.visibility = android.view.View.VISIBLE
-                updateButton.setOnClickListener {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadUrl)))
-                }
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Update available")
+                    .setMessage("Version ${update.versionName} is available. Download it now?")
+                    .setPositiveButton("Update") { _, _ ->
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadUrl)))
+                    }
+                    .setNegativeButton("Later", null)
+                    .setCancelable(true)
+                    .show()
             }
         }
     }
