@@ -5,6 +5,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.FormBody
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -19,6 +20,16 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         override fun loadForRequest(url: HttpUrl): List<Cookie> = cookies.values.toList()
     }
 
+    init {
+        val host = baseUrl.toHttpUrl().host
+        cookies["Cookie"] = Cookie.Builder()
+            .name("Cookie")
+            .value("body:Language:english:id=-1")
+            .domain(host)
+            .path("/")
+            .build()
+    }
+
     private val client = OkHttpClient.Builder()
         .cookieJar(cookieJar)
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -26,7 +37,7 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         .addInterceptor { chain ->
             val newReq = chain.request().newBuilder()
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android) RouterManagerApp")
-                .header("Referer", "$baseUrl/")
+                .header("Referer", "$baseUrl/index.asp")
                 .build()
             chain.proceed(newReq)
         }
@@ -64,13 +75,24 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         val token = fetchLoginToken()
         val encodedPassword = Base64.encodeToString(password.toByteArray(), Base64.NO_WRAP)
 
+        val httpUrl = baseUrl.toHttpUrl()
+        cookies["Cookie"] = Cookie.Builder()
+            .name("Cookie")
+            .value("body:Language:english:id=-1")
+            .domain(httpUrl.host)
+            .path("/")
+            .build()
+
         val form = FormBody.Builder()
             .add("UserName", username)
             .add("PassWord", encodedPassword)
             .add("x.X_HW_Token", token)
             .build()
 
-        val req = Request.Builder().url("$baseUrl/login.cgi").post(form).build()
+        val req = Request.Builder()
+            .url("$baseUrl/login.cgi")
+            .post(form)
+            .build()
         client.newCall(req).execute().use {
             if (!it.isSuccessful) throw IllegalStateException("Login failed: HTTP ${it.code}")
             val respBody = it.body?.string() ?: ""
@@ -83,7 +105,9 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
     }
 
     fun getWifiInfo(): WifiInfo {
-        val req = Request.Builder().url("$baseUrl/html/amp/wlanbasic/WlanBasic.asp").build()
+        val req = Request.Builder()
+            .url("$baseUrl/html/amp/wlanbasic/WlanBasic.asp")
+            .build()
         val body = client.newCall(req).execute().use { it.body?.string() ?: "" }
 
         val ssid = extract(
