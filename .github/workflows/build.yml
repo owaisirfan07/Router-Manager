@@ -1,9 +1,11 @@
-name: Build APK
+name: Build & Release APK
 
+# Every push to main = new version + new GitHub Release.
+# The app checks the latest Release when it opens and offers the update.
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*' ]
+    paths-ignore: [ '**.md' ]   # editing README/FEATURES doesn't make a new version
   workflow_dispatch:
 
 jobs:
@@ -23,17 +25,42 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+      # versionCode always goes up (run number), so the app knows a build is newer
+      - name: Set version
+        run: |
+          echo "VERSION_CODE=$((GITHUB_RUN_NUMBER + 100))" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=1.1.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      # Same signing key every time - otherwise Android refuses the update
+      - name: Load signing key
+        env:
+          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
+        run: |
+          if [ -z "$SIGNING_KEYSTORE" ]; then
+            echo "::error::SIGNING_KEYSTORE secret is missing. See README > Updates setup."
+            exit 1
+          fi
+          echo "$SIGNING_KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build signed APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          gradle assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk RouterManager.apk
 
       - name: Upload APK (build artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: RouterManager-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: RouterManager-apk
+          path: RouterManager.apk
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/debug/app-debug.apk
+          tag_name: b${{ env.VERSION_CODE }}
+          name: v${{ env.VERSION_NAME }}
+          body: ${{ github.event.head_commit.message || 'Manual build' }}
+          files: RouterManager.apk
+          make_latest: true
