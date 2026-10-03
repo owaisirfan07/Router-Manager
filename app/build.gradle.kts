@@ -3,6 +3,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Set by GitHub Actions (see .github/workflows/build.yml). Local builds use the defaults below.
+val ciVersionCode = System.getenv("VERSION_CODE")?.toIntOrNull()
+val ciVersionName = System.getenv("VERSION_NAME")
+val signingKeystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
+val signingPassword = System.getenv("SIGNING_PASSWORD")
+
 android {
     namespace = "com.cpagency.wifimanager"
     compileSdk = 34
@@ -11,13 +17,26 @@ android {
         applicationId = "com.cpagency.wifimanager"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = ciVersionCode ?: 2
+        versionName = ciVersionName ?: "1.1"
+    }
+
+    // Same key on every build, so the phone accepts each new APK as an update.
+    signingConfigs {
+        if (signingKeystorePath != null && signingPassword != null) {
+            create("release") {
+                storeFile = file(signingKeystorePath)
+                storePassword = signingPassword
+                keyAlias = "routermanager"
+                keyPassword = signingPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

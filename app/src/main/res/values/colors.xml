@@ -8,4 +8,7 @@
     <color name="textPrimary">#20222B</color>
     <color name="textSecondary">#71768A</color>
     <color name="warning">#FF7A45</color>
+    <color name="good">#12A150</color>
+    <color name="bad">#E5484D</color>
+    <color name="divider">#ECEEF3</color>
 </resources>

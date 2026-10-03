@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- downloaded update APKs are saved in cache/updates and shared with the installer -->
+    <cache-path name="updates" path="updates/" />
+</paths>

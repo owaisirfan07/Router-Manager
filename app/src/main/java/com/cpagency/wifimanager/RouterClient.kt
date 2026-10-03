@@ -84,8 +84,76 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
             ?: throw IllegalStateException("Could not find login token on router page")
     }
 
+    fun baseUrlHost(): String = baseUrl.removePrefix("http://").removePrefix("https://")
+
+    // remembered so we can log in again quietly when the router's session times out
+    private var savedUser: String? = null
+    private var savedPass: String? = null
+    private var pageToken: String? = null
+
+    private fun looksLoggedOut(body: String): Boolean =
+        body.contains("GetRandCnt") ||
+            (body.contains("top.location.replace") && body.length < 2500) ||
+            (body.contains("login.asp", ignoreCase = true) && body.length < 1000)
+
+    private fun rawFetch(path: String, post: Boolean, token: String?): Pair<Int, String> {
+        val builder = Request.Builder().url("$baseUrl/${path.trimStart('/')}")
+        if (post) {
+            val form = FormBody.Builder()
+            if (token != null) form.add("x.X_HW_Token", token)
+            builder.post(form.build())
+        }
+        return client.newCall(builder.build()).execute().use { it.code to (it.body?.string() ?: "") }
+    }
+
+    /** Token some POST data endpoints need (same one the router's home page uses). */
+    private fun getPageToken(): String {
+        pageToken?.let { return it }
+        val (_, body) = rawFetch("CustomApp/mainpage.asp", false, null)
+        val t = extract(Regex("""MainPageToken\s*=\s*"([^"]+)""""), body)
+            ?: extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), body)
+            ?: ""
+        pageToken = t
+        return t
+    }
+
+    /** Downloads one router page. Logs in again once if the session has expired. */
+    fun fetchPage(path: String, post: Boolean = false, needsToken: Boolean = false): String {
+        for (attempt in 0..1) {
+            val token = if (needsToken) getPageToken() else null
+            val (code, body) = rawFetch(path, post, token)
+            if (code == 404) throw IllegalStateException("page not found on this router (404)")
+            if (code >= 400) throw IllegalStateException("HTTP $code")
+            if (!looksLoggedOut(body)) return body
+            // session expired -> log in again and retry once
+            val u = savedUser
+            val p = savedPass
+            if (attempt == 1 || u == null || p == null) throw IllegalStateException("Router session expired - please log in again")
+            pageToken = null
+            login(u, p)
+        }
+        throw IllegalStateException("Could not load $path")
+    }
+
+    /** Downloads every page a section needs and parses them together. One failing page doesn't stop the rest. */
+    fun loadSection(section: Section): PageData {
+        val data = PageData()
+        for (src in section.sources) {
+            try {
+                data.add(src.path, fetchPage(src.path, src.post, src.token))
+            } catch (e: Exception) {
+                if (e.message?.contains("session expired") == true) throw e
+                data.errors[src.path] = e.message ?: e.javaClass.simpleName
+            }
+        }
+        return data
+    }
+
     /** Log in with username/password (password is base64-encoded, not hashed). */
     fun login(username: String, password: String) {
+        savedUser = username
+        savedPass = password
+        pageToken = null
         val token = fetchLoginToken()
         val encodedPassword = Base64.encodeToString(password.toByteArray(), Base64.NO_WRAP)
 
@@ -123,11 +191,7 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
 
     /** Read the current WiFi (2.4G) settings from WlanBasic.asp. */
     fun getWifiInfo(): WifiInfo {
-        val req = Request.Builder()
-            .url("$baseUrl/html/amp/wlanbasic/WlanBasic.asp")
-            .header("Referer", "$baseUrl/")
-            .build()
-        val body = client.newCall(req).execute().use { it.body?.string() ?: "" }
+        val body = fetchPage("html/amp/wlanbasic/WlanBasic.asp")
 
         val ssid = extract(
             Regex("stWlanWifi\\(\"[^\"]*\",\"[^\"]*\",\"[01]\",\"([^\"]*)\""), body
