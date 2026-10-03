@@ -294,9 +294,16 @@ class MainActivity : AppCompatActivity() {
         screenTitle.text = "Home"
         statusText.text = "Loading..."
 
-        val flow = FlowView(this)
-        val flowCard = baseCard().apply { addView(flow) }
-        content.addView(flowCard)
+        val hero = FlowView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) }
+            elevation = dp(6).toFloat()
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(22).toFloat())
+                }
+            }
+        }
+        content.addView(hero)
         val body = box()
         content.addView(body)
 
@@ -314,56 +321,48 @@ class MainActivity : AppCompatActivity() {
             val optic = data.first("stOpticInfo")
             val rx = optic?.get("revOpticPower")?.trim().orEmpty()
             val rxVal = rx.toDoubleOrNull()
+            val uptime = Fmt.value("Uptime", wan?.get("Uptime").orEmpty())
 
-            flow.internetUp = up
-            flow.internetLabel = if (up) "Internet online" else "Internet down"
-            flow.internetSub = wan?.get("IPAddress")?.ifBlank { null } ?: (wan?.get("ConnectionStatus") ?: "No WAN")
-            flow.routerLabel = info?.get("ModelName") ?: "Router"
-            flow.routerSub = "CPU ${data.v("cpuUsed").ifBlank { "--" }} · RAM ${data.v("memUsed").ifBlank { "--" }}"
-            flow.wifiCount = wifiN
-            flow.cableCount = cableN
-            flow.wifiLabel = "WiFi"
-            flow.wifiSub = "$wifiN device${if (wifiN == 1) "" else "s"}"
-            flow.cableLabel = "Cable"
-            flow.cableSub = "$cableN device${if (cableN == 1) "" else "s"}"
-            flow.update()
-
-            // 2 x 2 tiles
-            body.addView(tileRow(
-                tile("Internet", if (up) "Online" else "Down", Fmt.value("Uptime", wan?.get("Uptime").orEmpty()).ifBlank { "--" }.let { "for $it" }, up) { show("waninfo") },
-                tile("Fibre signal", if (rxVal != null) "$rx dBm" else "--",
-                    when { rxVal == null -> "--"; rxVal in -27.0..-8.0 -> "Good"; else -> "Weak - check cable" },
-                    rxVal?.let { it in -27.0..-8.0 }) { show("opticinfo") }
-            ))
-            body.addView(tileRow(
-                tile("Devices", "${online.size} online", "$wifiN WiFi · $cableN cable", null) { switchTab("devices") },
-                tile("Router", "CPU ${data.v("cpuUsed").ifBlank { "--" }}", "Memory ${data.v("memUsed").ifBlank { "--" }}", null) { show("deviceinfo") }
-            ))
+            hero.internetUp = up
+            hero.statusTitle = if (up) "Online" else (wan?.get("ConnectionStatus")?.ifBlank { null } ?: "Offline")
+            hero.statusSub = if (up) listOfNotNull(wan?.get("IPAddress")?.ifBlank { null }, uptime.ifBlank { null }?.let { "up $it" }).joinToString("  ·  ")
+                             else "No internet from the ISP"
+            hero.routerName = info?.get("ModelName") ?: "Router"
+            hero.routerSub = "CPU ${data.v("cpuUsed").ifBlank { "--" }}  ·  RAM ${data.v("memUsed").ifBlank { "--" }}"
+            hero.devicesLabel = "${online.size} device${if (online.size == 1) "" else "s"}"
+            hero.update()
 
             val ssid = data.all("stWlanInfo").firstOrNull { it["ssid"].isNotBlank() }
+            body.addView(tileRow(
+                tile("Fibre signal", if (rxVal != null) "$rx dBm" else "--",
+                    when { rxVal == null -> "--"; rxVal in -27.0..-8.0 -> "Good"; else -> "Weak - check cable" },
+                    rxVal?.let { it in -27.0..-8.0 }) { show("opticinfo") },
+                tile("Devices", "${online.size} online", "$wifiN WiFi  ·  $cableN cable", null) { switchTab("devices") }
+            ))
+            body.addView(tileRow(
+                tile("WiFi", ssid?.get("ssid") ?: "--", if (ssid?.get("enable") == "1") "On  ·  2.4 GHz" else "Off", null) { show("wlaninfo") },
+                tile("Health", if (up && rxVal?.let { it in -27.0..-8.0 } == true) "All good" else "Check",
+                    "Tap for diagnosis", if (up && rxVal?.let { it in -27.0..-8.0 } == true) true else null) { show("diagnose") }
+            ))
+
             body.addView(groupHeader("Quick actions"))
-            body.addView(baseCard().apply {
-                addView(box().apply {
-                    addView(menuRow("WiFi: ${ssid?.get("ssid") ?: "--"}", "Change name or password") { show("wifiEdit") })
-                    addView(divider())
-                    addView(menuRow("Internet speed test", "Real download / upload speed") { show("speedtest") })
-                    addView(divider())
-                    addView(menuRow("Reboot router", "Restart the router (about 2 min)") { confirmReboot() })
-                })
-            })
+            body.addView(menuCard(
+                Triple("Change WiFi name or password", ssid?.get("ssid") ?: "") { show("wifiEdit") },
+                Triple("Internet speed test", "Real download / upload speed") { show("speedtest") },
+                Triple("Reboot router", "Restart the router (about 2 min)") { confirmReboot() }
+            ))
             statusText.text = "Connected to ${client.baseUrlHost()}"
-            startTrafficPolling(flow)
+            startTrafficPolling(hero)
         }
     }
 
-    /** Live WiFi traffic: reads the router's WiFi byte counters every 4 s. */
-    private fun startTrafficPolling(flow: FlowView) {
+    /** Live WiFi traffic: reads the router's WiFi byte counters every 3 s. */
+    private fun startTrafficPolling(hero: FlowView) {
         pollJob?.cancel()
         pollJob = scope.launch {
             var lastSent = -1L
             var lastRecv = -1L
             var lastTime = 0L
-            val baseSub = flow.wifiSub
             while (isActive) {
                 try {
                     val d = withContext(Dispatchers.IO) { client.page("html/amp/wlaninfo/wlaninfo.asp") }
@@ -374,17 +373,14 @@ class MainActivity : AppCompatActivity() {
                     if (sent != null && recv != null) {
                         if (lastSent >= 0 && now > lastTime && sent >= lastSent && recv >= lastRecv) {
                             val secs = (now - lastTime) / 1000.0
-                            flow.downMbps = (sent - lastSent) * 8 / secs / 1_000_000
-                            flow.upMbps = (recv - lastRecv) * 8 / secs / 1_000_000
-                            flow.wifiSub = "$baseSub · ↓%.1f ↑%.1f Mbps".format(flow.downMbps, flow.upMbps)
-                            flow.update()
+                            hero.addSample((sent - lastSent) * 8 / secs / 1_000_000, (recv - lastRecv) * 8 / secs / 1_000_000)
                         }
                         lastSent = sent; lastRecv = recv; lastTime = now
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) { /* keep trying quietly */ }
-                delay(4000)
+                delay(3000)
             }
         }
     }
@@ -568,17 +564,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             })
-            b.addView(divider())
 
-            // speed limit - not possible on this router
-            b.addView(actionRow("Speed limit", "Not supported by this router", "Why?") {
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Speed limit")
-                    .setMessage("This Huawei HG8546M (firmware V3R017) has no per-device speed limit - only priority. " +
-                        "Your TP-Link TL-WR820N can limit speed (Bandwidth Control) for devices on its WiFi. " +
-                        "Send a HAR of its Bandwidth Control page and it can be added here.")
-                    .setPositiveButton("OK", null).show()
-            })
             card.addView(b)
             body.addView(card)
             statusText.text = mac

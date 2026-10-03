@@ -3,97 +3,118 @@ package com.cpagency.wifimanager
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.DashPathEffect
+import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.PointF
+import android.graphics.Path
+import android.graphics.RadialGradient
+import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.view.View
 import android.view.animation.LinearInterpolator
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
-import kotlin.math.hypot
 import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.sin
 
 /**
- * Animated "where is the internet going" picture for the dashboard:
+ * Dashboard hero: a gradient panel showing the live network.
  *
- *              Internet
- *                 |
- *               Router
- *              /      \
- *          WiFi        Cable
+ *   ONLINE                               HG8546M
+ *   100.70.30.30 · up 29m           CPU 23% · RAM 68%
  *
- * Dots run along the lines while the internet is up; they move faster when
- * there's more traffic. A line turns red/dashed when that link is down.
+ *     (globe) ====>>>==== (router) ====>>>==== (devices)
+ *     Internet             Router              6 devices
+ *
+ *   ↓ 12.4 Mbps        ↑ 1.2 Mbps        ~~~~sparkline~~~~
+ *
+ * Mint particles flow towards the devices (download), amber ones flow back
+ * (upload); both speed up with real traffic. Turns red and stops when offline.
  */
 class FlowView(context: Context) : View(context) {
 
-    // ---- data set from the activity ----
+    // ---- data set by the activity ----
     var internetUp = false
-    var internetLabel = "Internet"
-    var internetSub = "--"
-    var routerLabel = "Router"
+    var statusTitle = "Checking..."
+    var statusSub = ""
+    var routerName = "Router"
     var routerSub = ""
-    var wifiLabel = "WiFi"
-    var wifiSub = "--"
-    var cableLabel = "Cable"
-    var cableSub = "--"
-    var wifiCount = 0
-    var cableCount = 0
-    /** current traffic in Mbps (controls dot speed) */
+    var devicesLabel = "Devices"
     var downMbps = 0.0
     var upMbps = 0.0
+    private val history = ArrayList<Double>()
+
+    /** Add a live download sample (Mbps) for the sparkline. */
+    fun addSample(down: Double, up: Double) {
+        downMbps = down; upMbps = up
+        history.add(down)
+        while (history.size > 30) history.removeAt(0)
+        invalidate()
+    }
 
     fun update() = invalidate()
 
-    // ---- drawing ----
-    private val density = resources.displayMetrics.density
-    private fun dp(v: Float) = v * density
+    // ---- drawing setup ----
+    private val dpF = resources.displayMetrics.density
+    private fun dp(v: Float) = v * dpF
 
-    private val cGood = ContextCompat.getColor(context, R.color.good)
-    private val cBad = ContextCompat.getColor(context, R.color.bad)
-    private val cPrimary = ContextCompat.getColor(context, R.color.primary)
-    private val cText = ContextCompat.getColor(context, R.color.textPrimary)
-    private val cSub = ContextCompat.getColor(context, R.color.textSecondary)
-    private val cLine = ContextCompat.getColor(context, R.color.divider)
+    private val mint = Color.parseColor("#6EF2C2")
+    private val amber = Color.parseColor("#FFC86B")
 
-    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(3f); strokeCap = Paint.Cap.ROUND }
-    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val nodePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(2f) }
-    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; textSize = dp(13f); typeface = Typeface.DEFAULT_BOLD; color = cText }
-    private val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; textSize = dp(11.5f); color = cSub }
-    private val dash = DashPathEffect(floatArrayOf(dp(6f), dp(6f)), 0f)
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(1.5f); color = Color.WHITE; alpha = 60 }
+    private val particle = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val nodeFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val nodeStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(1.2f); color = Color.WHITE }
+    private val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(1.5f); color = Color.WHITE }
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val sparkLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(2f); color = mint; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+    private val sparkFill = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    private val caps = text(10.5f, bold = true, alpha = 170).apply { letterSpacing = 0.12f }
+    private val big = text(26f, bold = true)
+    private val small = text(12.5f, alpha = 200)
+    private val nodeLabel = text(12f, alpha = 220).apply { textAlign = Paint.Align.CENTER }
+    private val statValue = text(20f, bold = true)
+    private val statUnit = text(12f, alpha = 190)
+
+    private fun text(sp: Float, bold: Boolean = false, alpha: Int = 255) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; this.alpha = alpha; textSize = sp * resources.displayMetrics.scaledDensity
+        typeface = if (bold) Typeface.create("sans-serif-medium", Typeface.BOLD) else Typeface.create("sans-serif", Typeface.NORMAL)
+    }
 
     private val icGlobe = icon(R.drawable.ic_globe)
     private val icRouter = icon(R.drawable.ic_router)
-    private val icWifi = icon(R.drawable.ic_wifi)
-    private val icCable = icon(R.drawable.ic_lan)
+    private val icDevices = icon(R.drawable.ic_tab_devices)
+    private fun icon(id: Int): Drawable = DrawableCompat.wrap(ContextCompat.getDrawable(context, id)!!.mutate()).also { DrawableCompat.setTint(it, Color.WHITE) }
 
-    private fun icon(id: Int): Drawable = DrawableCompat.wrap(ContextCompat.getDrawable(context, id)!!.mutate())
+    private val rect = RectF()
+    private val path = Path()
 
-    private var phase = 0f      // 0..1, moves the dots
-    private var pulse = 0f      // 0..1, router ring
+    // ---- animation ----
+    private var downPhase = 0f
+    private var upPhase = 0f
+    private var pulse = 0f
     private var lastFrame = 0L
-
     private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 1000
-        repeatCount = ValueAnimator.INFINITE
-        interpolator = LinearInterpolator()
+        duration = 1000; repeatCount = ValueAnimator.INFINITE; interpolator = LinearInterpolator()
         addUpdateListener { tick() }
     }
 
+    private fun speedFor(mbps: Double) = 0.18f + (ln(1.0 + max(0.0, mbps)) / ln(101.0)).toFloat().coerceIn(0f, 1f) * 0.9f
+
     private fun tick() {
         val now = System.nanoTime()
-        val dt = if (lastFrame == 0L) 0f else ((now - lastFrame) / 1e9f).coerceAtMost(0.1f)
+        val dt = if (lastFrame == 0L) 0f else ((now - lastFrame) / 1e9f).coerceAtMost(0.05f)
         lastFrame = now
-        // speed: 0.25 loops/s when idle, up to ~1.4 loops/s with heavy traffic
-        val traffic = (downMbps + upMbps).coerceAtLeast(0.0)
-        val speed = 0.25f + (ln(1.0 + traffic) / ln(101.0)).toFloat().coerceIn(0f, 1f) * 1.15f
-        if (internetUp) phase = (phase + dt * speed) % 1f
-        pulse = (pulse + dt * 0.6f) % 1f
+        if (internetUp) {
+            downPhase = (downPhase + dt * speedFor(downMbps)) % 1f
+            upPhase = (upPhase + dt * speedFor(upMbps) * 0.8f) % 1f
+        }
+        pulse = (pulse + dt * 0.45f) % 1f
         invalidate()
     }
 
@@ -101,92 +122,133 @@ class FlowView(context: Context) : View(context) {
     override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val w = MeasureSpec.getSize(widthMeasureSpec)
-        setMeasuredDimension(w, dp(330f).toInt())
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), dp(318f).toInt())
     }
 
-    override fun onDraw(canvas: Canvas) {
+    override fun onDraw(c: Canvas) {
         val w = width.toFloat()
-        val r = dp(30f)
-        val internet = PointF(w / 2, dp(46f))
-        val router = PointF(w / 2, dp(160f))
-        val wifi = PointF(w * 0.2f, dp(262f))
-        val cable = PointF(w * 0.8f, dp(262f))
+        val h = height.toFloat()
+        val pad = dp(20f)
 
-        // lines
-        drawLink(canvas, internet, router, internetUp, r, forward = true)
-        drawLink(canvas, router, wifi, internetUp && wifiCount > 0, r, forward = true, active = wifiCount > 0)
-        drawLink(canvas, router, cable, internetUp && cableCount > 0, r, forward = true, active = cableCount > 0)
+        // background gradient panel
+        val (c1, c2) = if (internetUp) Color.parseColor("#1B1F5E") to Color.parseColor("#3D5AFE")
+                       else Color.parseColor("#3A1420") to Color.parseColor("#B23A48")
+        bgPaint.shader = LinearGradient(0f, 0f, w, h, c1, c2, Shader.TileMode.CLAMP)
+        rect.set(0f, 0f, w, h)
+        c.drawRoundRect(rect, dp(22f), dp(22f), bgPaint)
+        // soft light in the top-right corner
+        glow.shader = RadialGradient(w * 0.85f, h * 0.05f, w * 0.6f, Color.argb(55, 255, 255, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        c.drawRoundRect(rect, dp(22f), dp(22f), glow)
 
-        // router pulse ring
-        if (internetUp) {
-            ringPaint.color = cPrimary
-            ringPaint.alpha = ((1f - pulse) * 120).toInt()
-            canvas.drawCircle(router.x, router.y, r + dp(4f) + pulse * dp(16f), ringPaint)
+        // ---- header ----
+        var y = pad + dp(10f)
+        c.drawText("INTERNET", pad, y, caps)
+        y += dp(30f)
+        val dotR = dp(5f)
+        particle.shader = null
+        particle.color = if (internetUp) mint else Color.parseColor("#FF8A9A")
+        particle.alpha = 255
+        c.drawCircle(pad + dotR, y - dp(9f), dotR, particle)
+        c.drawText(statusTitle, pad + dotR * 2 + dp(8f), y, big)
+        c.drawText(statusSub, pad, y + dp(20f), small)
+
+        val right = w - pad
+        caps.textAlign = Paint.Align.RIGHT; small.textAlign = Paint.Align.RIGHT
+        c.drawText(routerName.uppercase(), right, pad + dp(10f), caps)
+        c.drawText(routerSub, right, pad + dp(30f), small)
+        caps.textAlign = Paint.Align.LEFT; small.textAlign = Paint.Align.LEFT
+
+        // ---- network row ----
+        val cy = dp(168f)
+        val xs = floatArrayOf(w * 0.13f, w * 0.5f, w * 0.87f)
+        val r = dp(22f)
+        val rRouter = dp(28f)
+
+        // connectors
+        for (i in 0..1) {
+            val sx = xs[i] + (if (i == 0) r else rRouter) + dp(6f)
+            val ex = xs[i + 1] - (if (i == 0) rRouter else r) - dp(6f)
+            if (internetUp) {
+                linePaint.pathEffect = null
+            } else {
+                linePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(dp(5f), dp(6f)), 0f)
+            }
+            c.drawLine(sx, cy, ex, cy, linePaint)
+            if (internetUp) {
+                drawStream(c, sx, ex, cy - dp(5f), downPhase + i * 0.37f, mint, forward = true)
+                drawStream(c, sx, ex, cy + dp(5f), upPhase + i * 0.21f, amber, forward = false)
+            }
         }
 
-        drawNode(canvas, internet, r, icGlobe, if (internetUp) cGood else cBad)
-        drawNode(canvas, router, r * 1.15f, icRouter, cPrimary)
-        drawNode(canvas, wifi, r, icWifi, if (wifiCount > 0) cPrimary else cSub)
-        drawNode(canvas, cable, r, icCable, if (cableCount > 0) cPrimary else cSub)
+        // router halo rings
+        if (internetUp) for (k in 0..1) {
+            val p = (pulse + k * 0.5f) % 1f
+            halo.alpha = ((1f - p) * 90).toInt()
+            c.drawCircle(xs[1], cy, rRouter + dp(3f) + p * dp(15f), halo)
+        }
 
-        // labels
-        label(canvas, internet.x + r + dp(70f), internet.y - dp(2f), internetLabel, internetSub, leftAlign = false)
-        label(canvas, router.x + r + dp(70f), router.y - dp(2f), routerLabel, routerSub, leftAlign = false)
-        label(canvas, wifi.x, wifi.y + r + dp(18f), wifiLabel, wifiSub)
-        label(canvas, cable.x, cable.y + r + dp(18f), cableLabel, cableSub)
+        drawNode(c, xs[0], cy, r, icGlobe)
+        drawNode(c, xs[1], cy, rRouter, icRouter)
+        drawNode(c, xs[2], cy, r, icDevices)
+        c.drawText("Internet", xs[0], cy + rRouter + dp(18f), nodeLabel)
+        c.drawText("Router", xs[1], cy + rRouter + dp(18f), nodeLabel)
+        c.drawText(devicesLabel, xs[2], cy + rRouter + dp(18f), nodeLabel)
+
+        // ---- bottom stats + sparkline ----
+        val by = h - pad - dp(4f)
+        drawStat(c, pad, by, "↓", downMbps, mint)
+        drawStat(c, pad + dp(118f), by, "↑", upMbps, amber)
+
+        val sx0 = pad + dp(232f)
+        val sx1 = w - pad
+        if (sx1 - sx0 > dp(40f) && history.size >= 2) {
+            val top = by - dp(34f)
+            val bottom = by
+            val maxV = max(1.0, history.maxOrNull() ?: 1.0)
+            path.reset()
+            history.forEachIndexed { i, v ->
+                val x = sx0 + (sx1 - sx0) * i / (history.size - 1)
+                val yy = bottom - ((v / maxV).toFloat() * (bottom - top))
+                if (i == 0) path.moveTo(x, yy) else path.lineTo(x, yy)
+            }
+            c.drawPath(path, sparkLine)
+            path.lineTo(sx1, bottom); path.lineTo(sx0, bottom); path.close()
+            sparkFill.shader = LinearGradient(0f, top, 0f, bottom, Color.argb(90, 110, 242, 194), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+            c.drawPath(path, sparkFill)
+        }
     }
 
-    private fun drawLink(c: Canvas, a: PointF, b: PointF, flowing: Boolean, r: Float, forward: Boolean, active: Boolean = true) {
-        // shorten the line so it starts/ends at the circle edges
-        val len = hypot(b.x - a.x, b.y - a.y)
-        val ux = (b.x - a.x) / len
-        val uy = (b.y - a.y) / len
-        val sx = a.x + ux * (r + dp(4f)); val sy = a.y + uy * (r + dp(4f))
-        val ex = b.x - ux * (r + dp(4f)); val ey = b.y - uy * (r + dp(4f))
+    private fun drawStat(c: Canvas, x: Float, baseline: Float, arrow: String, mbps: Double, color: Int) {
+        statValue.color = color
+        val v = if (!internetUp) "--" else if (mbps >= 100) "%.0f".format(mbps) else "%.1f".format(mbps)
+        c.drawText("$arrow $v", x, baseline - dp(14f), statValue)
+        c.drawText(if (arrow == "↓") "Mbps download" else "Mbps upload", x, baseline + dp(2f), statUnit)
+    }
 
-        linePaint.pathEffect = if (!active || !internetUp) dash else null
-        linePaint.color = when {
-            !internetUp -> cBad
-            !active -> cLine
-            else -> cLine
-        }
-        linePaint.alpha = if (!internetUp) 140 else 255
-        c.drawLine(sx, sy, ex, ey, linePaint)
-
-        if (!flowing) return
-        // 3 moving dots
-        val segLen = hypot(ex - sx, ey - sy)
-        for (i in 0 until 3) {
-            var t = (phase + i / 3f) % 1f
+    /** a lane of particles with short fading tails */
+    private fun drawStream(c: Canvas, sx: Float, ex: Float, y: Float, phase: Float, color: Int, forward: Boolean) {
+        val len = ex - sx
+        for (k in 0 until 2) {
+            var t = (phase + k / 2f) % 1f
             if (!forward) t = 1f - t
-            val x = sx + (ex - sx) * t
-            val y = sy + (ey - sy) * t
-            val fade = sin(t * Math.PI).toFloat()           // fade in/out at the ends
-            dotPaint.color = cGood
-            dotPaint.alpha = (60 + 195 * fade).toInt()
-            c.drawCircle(x, y, dp(4.5f), dotPaint)
-            if (segLen < dp(10f)) break
+            val fade = sin(t * Math.PI).toFloat()
+            for (tail in 0 until 6) {
+                val tt = if (forward) t - tail * 0.022f else t + tail * 0.022f
+                if (tt < 0f || tt > 1f) continue
+                particle.color = color
+                particle.alpha = (fade * (235 - tail * 38)).toInt().coerceIn(0, 255)
+                c.drawCircle(sx + len * tt, y, dp(2.6f) - tail * dp(0.35f), particle)
+            }
         }
     }
 
-    private fun drawNode(c: Canvas, p: PointF, r: Float, icon: Drawable, color: Int) {
-        nodePaint.color = color
-        nodePaint.alpha = 34
-        c.drawCircle(p.x, p.y, r, nodePaint)
-        nodePaint.alpha = 255
-        nodePaint.style = Paint.Style.STROKE
-        nodePaint.strokeWidth = dp(2f)
-        c.drawCircle(p.x, p.y, r, nodePaint)
-        nodePaint.style = Paint.Style.FILL
+    private fun drawNode(c: Canvas, x: Float, y: Float, r: Float, icon: Drawable) {
+        nodeFill.alpha = 34
+        c.drawCircle(x, y, r, nodeFill)
+        nodeStroke.alpha = 110
+        c.drawCircle(x, y, r, nodeStroke)
         val s = (r * 0.95f).toInt()
-        icon.setBounds((p.x - s / 2).toInt(), (p.y - s / 2).toInt(), (p.x + s / 2).toInt(), (p.y + s / 2).toInt())
-        DrawableCompat.setTint(icon, color)
+        icon.setBounds((x - s / 2).toInt(), (y - s / 2).toInt(), (x + s / 2).toInt(), (y + s / 2).toInt())
         icon.draw(c)
-    }
-
-    private fun label(c: Canvas, x: Float, y: Float, title: String, sub: String, leftAlign: Boolean = false) {
-        c.drawText(title, x, y, titlePaint)
-        if (sub.isNotEmpty()) c.drawText(sub, x, y + dp(16f), subPaint)
     }
 }

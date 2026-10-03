@@ -2,17 +2,16 @@
 
 ## New in this version
 - **Bottom tabs:** Home · Devices · Settings · More. Router info pages moved to More > Router information (open one group at a time).
-- **Animated home:** Internet → Router → WiFi / Cable flow with moving dots (faster with more traffic, red when internet is down), live WiFi speed, 4 tiles (Internet, Fibre, Devices, Router) and quick actions.
+- **Home hero:** gradient panel with internet status, public IP and uptime, router CPU/RAM, an animated Internet → Router → Devices flow (mint = download, amber = upload, faster with more traffic; turns red when offline), live ↓/↑ Mbps and a 90-second traffic graph. Below: Fibre, Devices, WiFi and Health tiles + quick actions.
 - **Devices tab:** online list (offline hidden behind a button), "This phone" and "Blocked" tags. Tap a device for:
   - **Internet access on/off** (router MAC filter, blacklist mode - can't block the phone you're using)
   - **Fixed IP** (DHCP reservation) add/remove
-  - Speed limit: not supported by this router (see below)
 - **Settings tab (editable):** WiFi name/password, WiFi radio (channel, width, power, standard, DTIM/beacon/RTS/frag), Internet/WAN (PPPoE username/password, VLAN, 802.1p, MRU, NAT + type, LCP, dial mode, own DNS), DHCP & DNS (on/off, range, lease, DNS 1/2), Fixed IPs, Router IP (same network only), **Reboot router**, Log out.
 - Every change is checked by reading the router again after saving - if the router didn't apply it, the app says so.
 - Login details are remembered on the phone.
 
 ## Speed limit per device
-The Huawei HG8546M (firmware V3R017) has **no per-device speed limit** - QoS and "Intelligent Channel" only set priority. The TP-Link TL-WR820N on LAN2 can limit speed for devices on its WiFi; send a HAR of its Bandwidth Control page to add it.
+The Huawei HG8546M (firmware V3R017) has **no per-device speed limit** in its firmware - QoS and "Intelligent Channel" only set priority, and the only rate limits are for the whole line (QoS total bandwidth) or a guest WiFi, which this router's firmware doesn't offer. So per-device speed limit is not in the app. Per-device **block** is available.
 
 ## Not editable yet
 - Internet time limits (Parental Control) - the template page wasn't in the HAR.
