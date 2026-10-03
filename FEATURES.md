@@ -7,6 +7,12 @@ so nothing is hidden. Only secret fields (password hashes, tokens) are not shown
 
 ## ✅ Included in the app
 
+### Internet Speed Test (Tools > Internet Speed Test, or the button on the login screen)
+- Real download and upload speed in Mbps, live while testing (Cloudflare speed servers, 4 connections at once)
+- Ping and jitter, your ISP, public IP and test server city
+- Rating (Excellent / Good / Average / Slow) and the last 10 results saved on the phone
+- Works without logging in to the router (also on mobile data - uses 50-300 MB per test)
+
 ### Home (dashboard)
 - Internet: status, public IP, gateway, DNS, online time, connection name
 - Fibre signal: Rx power (green/red against the -8 to -27 dBm range), Tx power, temperature, ONT status

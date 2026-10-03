@@ -161,6 +161,14 @@
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
                     android:text="Login" />
+
+                <Button
+                    android:id="@+id/speedTestButton"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="Internet speed test (no login needed)" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

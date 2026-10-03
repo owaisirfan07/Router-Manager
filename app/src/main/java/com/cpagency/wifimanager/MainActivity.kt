@@ -135,9 +135,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         saveButton.setOnClickListener { saveWifi() }
+
+        // speed test works without logging in to the router
+        findViewById<Button>(R.id.speedTestButton).setOnClickListener {
+            stack.clear()
+            show("speedtest")
+        }
     }
 
     override fun onDestroy() {
+        speedTest?.stop()
         scope.cancel()
         super.onDestroy()
     }
@@ -149,6 +156,7 @@ class MainActivity : AppCompatActivity() {
     private fun show(screen: String, push: Boolean = true) {
         if (push && stack.lastOrNull() != screen) stack.add(screen)
         loadJob?.cancel()
+        speedTest?.stop()
 
         loginSection.visibility = View.GONE
         navRow.visibility = View.VISIBLE
@@ -158,6 +166,7 @@ class MainActivity : AppCompatActivity() {
         when (screen) {
             "home" -> showHome()
             "wifiEdit" -> showWifiEdit()
+            "speedtest" -> showSpeedTest()
             else -> Sections.byId(screen)?.let { showSection(it) }
         }
     }
@@ -170,6 +179,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun logout() {
         loadJob?.cancel()
+        speedTest?.stop()
         stack.clear()
         navRow.visibility = View.GONE
         content.visibility = View.GONE
@@ -211,6 +221,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun addMenu() {
+        content.addView(groupHeader("Tools"))
+        content.addView(baseCard().apply { addView(menuRow("Internet Speed Test") { show("speedtest") }) })
+
         Sections.all.filter { it.id != "home" }.groupBy { it.group }.forEach { (group, sections) ->
             content.addView(groupHeader(group))
             val card = baseCard()
@@ -509,8 +522,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun primaryButton(text: String, onClick: () -> Unit) =
-        Button(this, null, com.google.android.material.R.attr.materialButtonStyle).apply {
+        com.google.android.material.button.MaterialButton(this).apply {
             this.text = text
+            backgroundTintList = android.content.res.ColorStateList.valueOf(color(R.color.primary))
+            setTextColor(color(android.R.color.white))
+            cornerRadius = dp(10)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(12) }
             setOnClickListener { onClick() }
         }
@@ -522,6 +538,179 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
             setOnClickListener { onClick() }
         }
+
+    /* ------------------------------------------------------------------ */
+    /*  Internet speed test                                                 */
+    /* ------------------------------------------------------------------ */
+
+    private var speedTest: SpeedTest? = null
+
+    private fun showSpeedTest() {
+        screenTitle.text = "Speed Test"
+        statusText.text = "Real download / upload speed of this phone's internet"
+        wifiSection.visibility = View.GONE
+        content.visibility = View.VISIBLE
+        content.removeAllViews()
+
+        // live meter
+        val meter = baseCard()
+        val meterBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(18), dp(22), dp(18), dp(22))
+        }
+        val phase = TextView(this).apply {
+            text = "Tap Start to test"
+            textSize = 14f
+            setTextColor(color(R.color.textSecondary))
+            gravity = Gravity.CENTER
+        }
+        val bigNumber = TextView(this).apply {
+            text = "--"
+            textSize = 56f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(color(R.color.textPrimary))
+            gravity = Gravity.CENTER
+        }
+        val unit = TextView(this).apply {
+            text = "Mbps"
+            textSize = 16f
+            setTextColor(color(R.color.textSecondary))
+            gravity = Gravity.CENTER
+        }
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(8)).apply { topMargin = dp(16) }
+        }
+        meterBox.addView(phase); meterBox.addView(bigNumber); meterBox.addView(unit); meterBox.addView(bar)
+        meter.addView(meterBox)
+        content.addView(meter)
+
+        // results
+        val resultsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(resultsBox)
+
+        lateinit var startBtn: Button
+        startBtn = primaryButton("Start test") {
+            if (speedTest != null) {
+                speedTest?.stop()
+                return@primaryButton
+            }
+            runSpeedTest(phase, bigNumber, unit, bar, resultsBox, startBtn)
+        }
+        content.addView(startBtn)
+
+        content.addView(noteText("Tests this phone's connection using Cloudflare's speed servers (4 connections at once, like speedtest.net). On WiFi the result also depends on WiFi signal. Each test uses roughly 50-300 MB of data, so careful on mobile data."))
+
+        val historyBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(historyBox)
+        renderSpeedHistory(historyBox)
+    }
+
+    private fun runSpeedTest(phase: TextView, big: TextView, unit: TextView, bar: ProgressBar, resultsBox: LinearLayout, startBtn: Button) {
+        val st = SpeedTest()
+        speedTest = st
+        startBtn.text = "Stop"
+        resultsBox.removeAllViews()
+        bar.progress = 0
+        big.setTextColor(color(R.color.textPrimary))
+
+        var meta: SpeedTest.Meta? = null
+        var ping: SpeedTest.Ping? = null
+        var down: Double? = null
+        var up: Double? = null
+
+        fun showResults(done: Boolean) {
+            resultsBox.removeAllViews()
+            val rows = ArrayList<Row>()
+            rows += Row("Download", down?.let { "%.1f Mbps  (%s)".format(it, SpeedTest.rating(it)) } ?: "--")
+            rows += Row("Upload", up?.let { "%.1f Mbps  (%s)".format(it, SpeedTest.rating(it)) } ?: "--")
+            rows += Row("Ping", ping?.let { "%.0f ms".format(it.ms) } ?: "--")
+            rows += Row("Jitter", ping?.let { "%.0f ms".format(it.jitterMs) } ?: "--")
+            meta?.let {
+                rows += Row("Provider (ISP)", it.isp)
+                rows += Row("Your public IP", it.ip)
+                rows += Row("Test server", it.server)
+            }
+            resultsBox.addView(cardView(Card(if (done) "Result" else "Testing...", rows, good = if (done) (down ?: 0.0) >= 8 else null)))
+        }
+
+        fun live(label: String, l: SpeedTest.Live) = runOnUiThread {
+            if (speedTest !== st) return@runOnUiThread
+            phase.text = label
+            big.text = "%.1f".format(l.currentMbps)
+            bar.progress = l.progress
+        }
+
+        showResults(false)
+        loadJob = scope.launch {
+            try {
+                phase.text = "Finding server..."
+                meta = withContext(Dispatchers.IO) { st.meta() }
+                phase.text = "Measuring ping..."
+                big.text = "--"
+                unit.text = "ms"
+                ping = withContext(Dispatchers.IO) { st.ping() }
+                big.text = "%.0f".format(ping!!.ms)
+                showResults(false)
+
+                unit.text = "Mbps  ↓ download"
+                down = withContext(Dispatchers.IO) { st.download(10, 4) { live("Testing download...", it) } }
+                showResults(false)
+
+                unit.text = "Mbps  ↑ upload"
+                bar.progress = 0
+                up = withContext(Dispatchers.IO) { st.upload(10, 4) { live("Testing upload...", it) } }
+
+                phase.text = "Done"
+                big.text = "%.1f".format(down!!)
+                unit.text = "Mbps download  ·  %.1f upload".format(up!!)
+                bar.progress = 100
+                showResults(true)
+                saveSpeedResult(down!!, up!!, ping!!.ms)
+                (resultsBox.parent as? LinearLayout)?.let { parent ->
+                    (parent.getChildAt(parent.childCount - 1) as? LinearLayout)?.let { renderSpeedHistory(it) }
+                }
+            } catch (e: Throwable) {
+                if (speedTest === st) {
+                    val stoppedByUser = e is InterruptedException || e is kotlinx.coroutines.CancellationException
+                    phase.text = if (stoppedByUser) "Stopped" else "Test failed: ${e.message}"
+                    if (!stoppedByUser) big.setTextColor(color(R.color.bad))
+                    if (down != null || ping != null) showResults(false)
+                }
+            } finally {
+                if (speedTest === st) {
+                    speedTest = null
+                    startBtn.text = "Start again"
+                }
+            }
+        }
+    }
+
+    // last 10 results, stored on the phone
+    private fun saveSpeedResult(down: Double, up: Double, pingMs: Double) {
+        val prefs = getSharedPreferences("speedtest", MODE_PRIVATE)
+        val arr = org.json.JSONArray(prefs.getString("history", "[]"))
+        val item = org.json.JSONObject()
+            .put("t", System.currentTimeMillis()).put("d", down).put("u", up).put("p", pingMs)
+        val list = mutableListOf(item)
+        for (i in 0 until minOf(arr.length(), 9)) list += arr.getJSONObject(i)
+        prefs.edit().putString("history", org.json.JSONArray(list).toString()).apply()
+    }
+
+    private fun renderSpeedHistory(box: LinearLayout) {
+        box.removeAllViews()
+        val arr = org.json.JSONArray(getSharedPreferences("speedtest", MODE_PRIVATE).getString("history", "[]"))
+        if (arr.length() == 0) return
+        val fmt = java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.UK)
+        val rows = (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            Row(fmt.format(java.util.Date(o.getLong("t"))),
+                "↓ %.1f  ↑ %.1f Mbps  ·  %.0f ms".format(o.getDouble("d"), o.getDouble("u"), o.getDouble("p")))
+        }
+        box.addView(cardView(Card("Previous tests", rows)))
+    }
 
     /* ------------------------------------------------------------------ */
     /*  In-app updates (from GitHub Releases)                               */
