@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:id="@+id/scrollRoot"
     android:layout_height="match_parent"
+    android:background="@color/background"
+    android:orientation="vertical">
+
+<androidx.core.widget.NestedScrollView
+    android:id="@+id/scrollRoot"
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1"
     android:background="@color/background"
     android:fillViewport="true">
 
@@ -44,15 +51,6 @@
                 android:layout_height="wrap_content"
                 android:minWidth="0dp"
                 android:text="Refresh" />
-
-            <Button
-                android:id="@+id/logoutButton"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="0dp"
-                android:text="Logout"
-                android:textColor="@color/warning" />
         </LinearLayout>
 
         <TextView
@@ -421,3 +419,16 @@
             android:textSize="13sp" />
     </LinearLayout>
 </androidx.core.widget.NestedScrollView>
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/cardBackground"
+        android:elevation="8dp"
+        android:visibility="gone"
+        app:itemIconTint="@color/nav_item"
+        app:itemTextColor="@color/nav_item"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/bottom_nav" />
+</LinearLayout>

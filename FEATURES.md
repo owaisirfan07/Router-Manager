@@ -1,4 +1,25 @@
-# Router Manager v1.1 – what's in the app
+# Router Manager – what's in the app
+
+## New in this version
+- **Bottom tabs:** Home · Devices · Settings · More. Router info pages moved to More > Router information (open one group at a time).
+- **Animated home:** Internet → Router → WiFi / Cable flow with moving dots (faster with more traffic, red when internet is down), live WiFi speed, 4 tiles (Internet, Fibre, Devices, Router) and quick actions.
+- **Devices tab:** online list (offline hidden behind a button), "This phone" and "Blocked" tags. Tap a device for:
+  - **Internet access on/off** (router MAC filter, blacklist mode - can't block the phone you're using)
+  - **Fixed IP** (DHCP reservation) add/remove
+  - Speed limit: not supported by this router (see below)
+- **Settings tab (editable):** WiFi name/password, WiFi radio (channel, width, power, standard, DTIM/beacon/RTS/frag), Internet/WAN (PPPoE username/password, VLAN, 802.1p, MRU, NAT + type, LCP, dial mode, own DNS), DHCP & DNS (on/off, range, lease, DNS 1/2), Fixed IPs, Router IP (same network only), **Reboot router**, Log out.
+- Every change is checked by reading the router again after saving - if the router didn't apply it, the app says so.
+- Login details are remembered on the phone.
+
+## Speed limit per device
+The Huawei HG8546M (firmware V3R017) has **no per-device speed limit** - QoS and "Intelligent Channel" only set priority. The TP-Link TL-WR820N on LAN2 can limit speed for devices on its WiFi; send a HAR of its Bandwidth Control page to add it.
+
+## Not editable yet
+- Internet time limits (Parental Control) - the template page wasn't in the HAR.
+- IPv6 WAN, firewall, port mapping, DMZ, routes, QoS - view only.
+
+---
+
 
 The app reads the same pages the router's web admin panel uses (Huawei HG8546M,
 `192.168.100.1`), and shows them as simple cards. Every screen also has a

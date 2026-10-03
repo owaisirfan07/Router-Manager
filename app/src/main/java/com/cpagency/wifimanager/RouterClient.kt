@@ -69,7 +69,9 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         val wmmEnabled: Boolean,
         val wpsEnabled: Boolean,
         val maxDevices: Int,
-        val securityMode: SecurityMode
+        val securityMode: SecurityMode,
+        /** 11b / 11g / 11n / 11bg / 11bgn - re-sent unchanged on save */
+        val standard: String = "11bgn"
     )
 
     private fun extract(regex: Regex, text: String, group: Int = 1): String? =
@@ -134,6 +136,42 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         }
         throw IllegalStateException("Could not load $path")
     }
+
+    /**
+     * Sends a change the same way the router's own page does:
+     * 1. loads [page] to get a fresh token (and to be sure we're logged in),
+     * 2. POSTs [params] + x.X_HW_Token to [action], relative to the page's folder
+     *    (e.g. page html/bbsp/dhcp/dhcp.asp + "set.cgi?x=..." -> /html/bbsp/dhcp/set.cgi?x=...).
+     * Returns the router's response text.
+     */
+    fun submit(page: String, action: String, params: List<Pair<String, String>>): String {
+        val pageBody = fetchPage(page)
+        val token = extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), pageBody)
+            ?: extract(Regex("name=\"onttoken\"[^>]*value=\"([^\"]+)\""), pageBody)
+            ?: throw IllegalStateException("Could not get a security token from the router")
+        val dir = page.trimStart('/').substringBeforeLast('/', "")
+        val url = "$baseUrl/" + (if (dir.isEmpty()) "" else "$dir/") + action
+        val form = FormBody.Builder()
+        for ((k, v) in params) form.add(k, v)
+        form.add("x.X_HW_Token", token)
+        val req = Request.Builder().url(url).header("Referer", "$baseUrl/$page").post(form.build()).build()
+        return client.newCall(req).execute().use {
+            if (!it.isSuccessful) throw IllegalStateException("Router refused the change (HTTP ${it.code})")
+            it.body?.string() ?: ""
+        }
+    }
+
+    /** Parsed data of one page (helper for RouterActions). */
+    fun page(vararg paths: String): PageData {
+        val d = PageData()
+        for (p in paths) d.add(p, fetchPage(p))
+        return d
+    }
+
+    /** True if the router answers at all (used while it reboots). */
+    fun isReachable(): Boolean = try {
+        client.newCall(Request.Builder().url("$baseUrl/").build()).execute().use { it.code < 500 }
+    } catch (e: Exception) { false }
 
     /** Downloads every page a section needs and parses them together. One failing page doesn't stop the rest. */
     fun loadSection(section: Section): PageData {
@@ -239,7 +277,13 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         // WPS enabled state: new stWpsPin(domain, ConfigMethod, DevicePassword, PinGenerator, Enable)
         val wpsEnabled = extract(Regex("new stWpsPin\\([^)]*,\"(\\d)\"\\)"), body) == "1"
 
+        // radio standard, from stWlanWifi(domain,name,enable,ssid,mode,...)
+        val standard = extract(
+            Regex("new stWlanWifi\\(\"[^\"]*\",\"[^\"]*\",\"[01]\",\"[^\"]*\",\"(\\w+)\""), body
+        )?.takeIf { it.startsWith("11") } ?: "11bgn"
+
         return WifiInfo(
+            standard = standard,
             ssid = ssid,
             domain = domain,
             token = token,
@@ -287,7 +331,7 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
             .add("w.SsidInst", "1")
             .add("w.SSID", newSsid)
             .add("w.Enable", "1")
-            .add("w.Standard", "11bgn")
+            .add("w.Standard", info.standard)
             .add("w.BasicAuthenticationMode", "None")
             .add("w.BasicEncryptionModes", "AESEncryption")
             .add("w.WPAAuthenticationMode", "EAPAuthentication")

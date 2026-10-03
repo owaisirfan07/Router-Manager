@@ -449,7 +449,7 @@ object Custom {
 
     private fun wanList(d: PageData): List<HwRecord> = d.all("WanPPP") + d.all("WanIP")
 
-    private fun internetWan(d: PageData): HwRecord? {
+    fun internetWan(d: PageData): HwRecord? {
         val list = wanList(d)
         return list.firstOrNull { it["ServiceList"].contains("INTERNET") && it["ConnectionStatus"] == "Connected" }
             ?: list.firstOrNull { it["ServiceList"].contains("INTERNET") }
@@ -802,7 +802,7 @@ object Sections {
 
     val all: List<Section> = listOf(
         home,
-        Section("devices", "Connected Devices", "Status",
+        Section("devices_info", "Connected Devices", "Status",
             listOf(Src(USER_DEVS, post = true), Src("html/bbsp/common/GetLanUserDhcpInfo.asp", post = true)),
             classes = emptyList(), custom = Custom::allDevices, emptyText = "No devices found."),
         Section("diagnose", "One-Click Diagnosis", "Status",
