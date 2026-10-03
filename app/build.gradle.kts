@@ -7,7 +7,7 @@ plugins {
 val ciVersionCode = System.getenv("VERSION_CODE")?.toIntOrNull()
 val ciVersionName = System.getenv("VERSION_NAME")
 val signingKeystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
-val signingPassword = System.getenv("SIGNING_PASSWORD")
+val signingPassword = System.getenv("SIGNING_PASSWORD")?.trim()
 
 android {
     namespace = "com.cpagency.wifimanager"
