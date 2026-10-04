@@ -795,7 +795,7 @@ object Sections {
 
     val home = Section(
         "home", "Home Page", "Status",
-        listOf(Src(WAN_INFO), Src(WAN_LIST), Src(USER_DEVS, post = true), Src("html/ssmp/deviceinfo/deviceinfo.asp"),
+        listOf(Src(WAN_INFO), Src(WAN_LIST), Src(USER_DEVS), Src("html/ssmp/deviceinfo/deviceinfo.asp"),
             Src("html/amp/opticinfo/opticinfo.asp"), Src("html/amp/common/wlan_list.asp")),
         classes = emptyList(), custom = Custom::home
     )
@@ -803,7 +803,7 @@ object Sections {
     val all: List<Section> = listOf(
         home,
         Section("devices_info", "Connected Devices", "Status",
-            listOf(Src(USER_DEVS, post = true), Src("html/bbsp/common/GetLanUserDhcpInfo.asp", post = true)),
+            listOf(Src(USER_DEVS), Src("html/bbsp/common/GetLanUserDhcpInfo.asp", post = true)),
             classes = emptyList(), custom = Custom::allDevices, emptyText = "No devices found."),
         Section("diagnose", "One-Click Diagnosis", "Status",
             listOf(Src("html/amp/common/getSmartDiagnoseResult.asp", post = true, token = true),
@@ -815,8 +815,8 @@ object Sections {
         Section("deviceinfo", "Device Information", "System Info",
             listOf(Src("html/ssmp/deviceinfo/deviceinfo.asp")), classes = emptyList(), custom = Custom::deviceInfo),
         Section("waninfo", "WAN Information", "System Info",
-            listOf(Src(WAN_INFO), Src(WAN_LIST), Src("html/bbsp/common/wanipv6state.asp"), Src("html/bbsp/waninfo/waninfo.asp")),
-            classes = listOf("WanPPP", "WanIP", "IPv6WanInfo", "PONPackageInfo"),
+            listOf(Src(WAN_INFO), Src(WAN_LIST), Src("html/bbsp/common/wanipv6state.asp")),
+            classes = listOf("WanPPP", "WanIP", "IPv6WanInfo"),
             fields = mapOf(
                 "WanPPP" to WAN_STATUS_FIELDS, "WanIP" to WAN_STATUS_FIELDS,
                 "IPv6WanInfo" to listOf("ConnectionStatus", "Type", "L2EncapType", "DNSServers", "AFTRName", "AFTRPeerAddr", "DefaultRouterAddress", "V6UpTime")
@@ -830,7 +830,7 @@ object Sections {
             custom = Custom::ethPorts),
         Section("wlaninfo", "WLAN Information", "System Info",
             listOf(Src("html/amp/wlaninfo/wlaninfo.asp"), Src("html/amp/wlaninfo/getassociateddeviceinfo.asp", post = true),
-                Src("html/amp/wlaninfo/getneighbourAPinfo.asp", post = true), Src(USER_DEVS, post = true)),
+                Src("html/amp/wlaninfo/getneighbourAPinfo.asp", post = true), Src(USER_DEVS)),
             classes = emptyList(), custom = Custom::wlanInfo),
         Section("wlancoverinfo", "Smart WiFi Coverage", "System Info",
             listOf(Src("html/amp/wificoverinfo/wlancoverinfo.asp")),

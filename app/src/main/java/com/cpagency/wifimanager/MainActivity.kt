@@ -118,7 +118,10 @@ class MainActivity : AppCompatActivity() {
         setupVersionText()
 
         backButton.setOnClickListener { goBack() }
-        findViewById<Button>(R.id.refreshButton).setOnClickListener { stack.lastOrNull()?.let { show(it, push = false) } }
+        findViewById<Button>(R.id.refreshButton).setOnClickListener {
+            if (loggedIn) client.clearCache() // Refresh = always ask the router again
+            stack.lastOrNull()?.let { show(it, push = false) }
+        }
 
         bottomNav.setOnItemSelectedListener { item ->
             if (!syncingTab) {
@@ -352,6 +355,7 @@ class MainActivity : AppCompatActivity() {
                 Triple("Reboot router", "Restart the router (about 2 min)") { confirmReboot() }
             ))
             statusText.text = "Connected to ${client.baseUrlHost()}"
+            heroView = hero
             startTrafficPolling(hero)
         }
     }
@@ -365,7 +369,7 @@ class MainActivity : AppCompatActivity() {
             var lastTime = 0L
             while (isActive) {
                 try {
-                    val d = withContext(Dispatchers.IO) { client.page("html/amp/wlaninfo/wlaninfo.asp") }
+                    val d = withContext(Dispatchers.IO) { client.page("html/amp/wlaninfo/wlaninfo.asp", maxAgeMs = 0) }
                     val p = d.first("stPacketInfo")
                     val sent = p?.get("totalBytesSent")?.toLongOrNull()
                     val recv = p?.get("totalBytesReceived")?.toLongOrNull()
@@ -380,9 +384,17 @@ class MainActivity : AppCompatActivity() {
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) { /* keep trying quietly */ }
-                delay(3000)
+                delay(5000)
             }
         }
+    }
+
+    // live graph only while the app is on screen
+    private var heroView: FlowView? = null
+
+    override fun onPause() {
+        super.onPause()
+        if (stack.lastOrNull() == "home") pollJob?.cancel()
     }
 
     private fun tileRow(a: View, b: View) = LinearLayout(this).apply {
@@ -1593,5 +1605,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
         checkForUpdate()
+        // restart the live graph when coming back to the Home screen
+        val hero = heroView
+        if (loggedIn && stack.lastOrNull() == "home" && hero != null && pollJob?.isActive != true) startTrafficPolling(hero)
     }
 }

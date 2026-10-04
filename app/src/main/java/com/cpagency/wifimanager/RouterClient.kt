@@ -18,6 +18,9 @@ import java.util.concurrent.TimeUnit
  * router. If the router's auth mode is changed to Open/WEP/RADIUS, the save
  * step would need adjustments.
  */
+/** How long a downloaded page is reused (ms). */
+const val CACHE_MS = 30_000L
+
 class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
 
     private val cookies = mutableMapOf<String, Cookie>()
@@ -119,23 +122,49 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         return t
     }
 
+    /* ---------- speed: short cache + parallel downloads ---------- */
+
+    /** Pages read in the last [CACHE_MS] are reused, so going back/forth between screens is instant. */
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
+
+    /** Forget cached pages (Refresh button, and after every change we send). */
+    fun clearCache() = cache.clear()
+
+    /** 3 downloads at a time - faster than one by one, gentle enough for the router. */
+    private val pool = java.util.concurrent.Executors.newFixedThreadPool(3)
+
+    private val loginLock = Any()
+    @Volatile private var loginGen = 0
+
     /** Downloads one router page. Logs in again once if the session has expired. */
-    fun fetchPage(path: String, post: Boolean = false, needsToken: Boolean = false): String {
+    fun fetchPage(path: String, post: Boolean = false, needsToken: Boolean = false, maxAgeMs: Long = CACHE_MS): String {
+        val key = "$path|$post|$needsToken"
+        if (maxAgeMs > 0) cache[key]?.let { (t, body) -> if (System.currentTimeMillis() - t < maxAgeMs) return body }
         for (attempt in 0..1) {
+            val gen = loginGen
             val token = if (needsToken) getPageToken() else null
             val (code, body) = rawFetch(path, post, token)
             if (code == 404) throw IllegalStateException("page not found on this router (404)")
             if (code >= 400) throw IllegalStateException("HTTP $code")
-            if (!looksLoggedOut(body)) return body
-            // session expired -> log in again and retry once
+            if (!looksLoggedOut(body)) {
+                cache[key] = System.currentTimeMillis() to body
+                return body
+            }
+            // session expired -> log in again (only once, even if several downloads notice it together)
             val u = savedUser
             val p = savedPass
             if (attempt == 1 || u == null || p == null) throw IllegalStateException("Router session expired - please log in again")
-            pageToken = null
-            login(u, p)
+            synchronized(loginLock) {
+                if (loginGen == gen) { pageToken = null; login(u, p) }
+            }
         }
         throw IllegalStateException("Could not load $path")
     }
+
+    /** Downloads several pages at the same time; results keep the given order. */
+    private fun fetchAll(srcs: List<Src>, maxAgeMs: Long): List<Result<String>> =
+        srcs.map { s -> pool.submit<String> { fetchPage(s.path, s.post, s.token, maxAgeMs) } }
+            .map { f -> runCatching { try { f.get() } catch (e: java.util.concurrent.ExecutionException) { throw e.cause ?: e } } }
 
     /**
      * Sends a change the same way the router's own page does:
@@ -145,7 +174,7 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
      * Returns the router's response text.
      */
     fun submit(page: String, action: String, params: List<Pair<String, String>>): String {
-        val pageBody = fetchPage(page)
+        val pageBody = fetchPage(page, maxAgeMs = 0) // always a fresh token
         val token = extract(Regex("id=\"hwonttoken\"[^>]*value=\"([^\"]+)\""), pageBody)
             ?: extract(Regex("name=\"onttoken\"[^>]*value=\"([^\"]+)\""), pageBody)
             ?: throw IllegalStateException("Could not get a security token from the router")
@@ -155,16 +184,21 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         for ((k, v) in params) form.add(k, v)
         form.add("x.X_HW_Token", token)
         val req = Request.Builder().url(url).header("Referer", "$baseUrl/$page").post(form.build()).build()
-        return client.newCall(req).execute().use {
-            if (!it.isSuccessful) throw IllegalStateException("Router refused the change (HTTP ${it.code})")
-            it.body?.string() ?: ""
+        try {
+            return client.newCall(req).execute().use {
+                if (!it.isSuccessful) throw IllegalStateException("Router refused the change (HTTP ${it.code})")
+                it.body?.string() ?: ""
+            }
+        } finally {
+            clearCache() // settings changed - don't show old values
         }
     }
 
     /** Parsed data of one page (helper for RouterActions). */
-    fun page(vararg paths: String): PageData {
+    fun page(vararg paths: String, maxAgeMs: Long = CACHE_MS): PageData {
         val d = PageData()
-        for (p in paths) d.add(p, fetchPage(p))
+        val results = fetchAll(paths.map { Src(it) }, maxAgeMs)
+        paths.forEachIndexed { i, p -> d.add(p, results[i].getOrThrow()) }
         return d
     }
 
@@ -174,21 +208,24 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
     } catch (e: Exception) { false }
 
     /** Downloads every page a section needs and parses them together. One failing page doesn't stop the rest. */
-    fun loadSection(section: Section): PageData {
+    fun loadSection(section: Section, maxAgeMs: Long = CACHE_MS): PageData {
         val data = PageData()
-        for (src in section.sources) {
-            try {
-                data.add(src.path, fetchPage(src.path, src.post, src.token))
-            } catch (e: Exception) {
-                if (e.message?.contains("session expired") == true) throw e
-                data.errors[src.path] = e.message ?: e.javaClass.simpleName
-            }
+        val results = fetchAll(section.sources, maxAgeMs)
+        section.sources.forEachIndexed { i, src ->
+            results[i].fold(
+                onSuccess = { data.add(src.path, it) },
+                onFailure = { e ->
+                    if (e.message?.contains("session expired") == true) throw e
+                    data.errors[src.path] = e.message ?: e.javaClass.simpleName
+                }
+            )
         }
         return data
     }
 
     /** Log in with username/password (password is base64-encoded, not hashed). */
     fun login(username: String, password: String) {
+        loginGen++
         savedUser = username
         savedPass = password
         pageToken = null
@@ -229,7 +266,7 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
 
     /** Read the current WiFi (2.4G) settings from WlanBasic.asp. */
     fun getWifiInfo(): WifiInfo {
-        val body = fetchPage("html/amp/wlanbasic/WlanBasic.asp")
+        val body = fetchPage("html/amp/wlanbasic/WlanBasic.asp", maxAgeMs = 0) // fresh token for saving
 
         val ssid = extract(
             Regex("stWlanWifi\\(\"[^\"]*\",\"[^\"]*\",\"[01]\",\"([^\"]*)\""), body
@@ -362,6 +399,7 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         client.newCall(req).execute().use {
             if (!it.isSuccessful) throw IllegalStateException("Save failed: HTTP ${it.code}")
         }
+        clearCache()
     }
 
     /** Turn the whole 2.4G radio on/off (separate endpoint from saveWifi). */
@@ -379,5 +417,6 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
         client.newCall(req).execute().use {
             if (!it.isSuccessful) throw IllegalStateException("Toggle WiFi failed: HTTP ${it.code}")
         }
+        clearCache()
     }
 }
