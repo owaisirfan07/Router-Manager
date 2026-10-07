@@ -76,8 +76,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var securityModeDropdown: AutoCompleteTextView
     private lateinit var maxDevicesInput: TextInputEditText
 
+    /** Screen to open after login (e.g. tapped an "internet down" notification). */
+    private var pendingOpen: String? = null
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val target = intent.getStringExtra("open") ?: return
+        if (loggedIn) show(target) else pendingOpen = target
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NetUtil.appContext = applicationContext
+        pendingOpen = intent?.getStringExtra("open")
         setContentView(R.layout.activity_main)
 
         scrollRoot = findViewById(R.id.scrollRoot)
@@ -168,8 +179,15 @@ class MainActivity : AppCompatActivity() {
                     withContext(Dispatchers.IO) { client.login(user, pass) }
                     prefs.edit().putString("ip", ip).putString("user", user).putString("pass", pass).apply()
                     loggedIn = true
+                    RouterSession.client = client
+                    Monitor.start(this@MainActivity)
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                        checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 11)
+                    }
                     bottomNav.visibility = View.VISIBLE
                     switchTab("home")
+                    if (pendingOpen != null) { show(pendingOpen!!); pendingOpen = null }
                 } catch (e: Exception) {
                     statusText.text = "Error: ${e.message}"
                     Toast.makeText(this@MainActivity, "Login failed: ${e.message}", Toast.LENGTH_LONG).show()
@@ -219,6 +237,7 @@ class MainActivity : AppCompatActivity() {
         if (push && stack.lastOrNull() != screen) stack.add(screen)
         loadJob?.cancel()
         pollJob?.cancel()
+        liveJob?.cancel()
         speedTest?.stop()
 
         loginSection.visibility = View.GONE
@@ -243,6 +262,8 @@ class MainActivity : AppCompatActivity() {
             screen == "edit:static" -> editReservations()
             screen == "edit:wan" -> editWan()
             screen == "speedtest" -> showSpeedTest()
+            screen == "internet" -> showInternet()
+            screen == "usage" -> showUsage()
             else -> Sections.byId(screen)?.let { showSection(it) }
         }
     }
@@ -259,6 +280,7 @@ class MainActivity : AppCompatActivity() {
     private fun logout() {
         loadJob?.cancel()
         pollJob?.cancel()
+        liveJob?.cancel()
         speedTest?.stop()
         loggedIn = false
         stack.clear()
@@ -313,6 +335,11 @@ class MainActivity : AppCompatActivity() {
         load(body) {
             val data = withContext(Dispatchers.IO) { client.loadSection(Sections.home) }
             body.removeAllViews()
+
+            val liveBox = box()
+            body.addView(liveBox)
+            watchLive(liveBox)
+            body.addView(usageTiles())
 
             val wan = Custom.internetWan(data)
             val up = wan?.get("ConnectionStatus") == "Connected"
@@ -960,6 +987,8 @@ class MainActivity : AppCompatActivity() {
         statusText.text = "Tools and full router information"
         content.addView(groupHeader("Tools"))
         content.addView(menuCard(
+            Triple("Internet monitor", "Internet kab band hua, kitni der") { show("internet") },
+            Triple("Data usage", "Mahine ka data, device-wise") { show("usage") },
             Triple("Internet speed test", "Real download / upload speed") { show("speedtest") },
             Triple("One-click diagnosis", "Fibre, ISP registration, LAN ports") { show("diagnose") },
             Triple("All connected devices (details)", "Full list with DHCP lease times") { show("devices_info") }
@@ -1290,6 +1319,266 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
             setOnClickListener { onClick() }
         }
+
+    /* ------------------------------------------------------------------ */
+    /*  Internet monitor + data usage                                       */
+    /* ------------------------------------------------------------------ */
+
+    private var liveJob: Job? = null
+    private val timeFmt get() = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US)
+    private val dayFmt get() = java.text.SimpleDateFormat("MMM d", java.util.Locale.US)
+    private val monthFmt get() = java.text.SimpleDateFormat("MMMM yyyy", java.util.Locale.US)
+
+    private fun dur(ms: Long): String {
+        val m = ms / 60_000
+        return when { m < 1 -> "<1 min"; m < 60 -> "$m min"; else -> "${m / 60} h ${m % 60} min" }
+    }
+
+    private fun ms(v: Long?) = v?.let { "$it ms" } ?: "--"
+
+    /** Fills [box] with the live internet status card. */
+    private fun renderLive(box: LinearLayout, l: Monitor.Live) {
+        box.removeAllViews()
+        if (!Monitor.isEnabled(this)) {
+            box.addView(cardView(Card("Internet", note = "Internet monitor band hai. Internet tab mein on karein.", link = "internet")))
+            return
+        }
+        val card = when (l.status) {
+            Monitor.Status.STARTING -> Card("Internet", note = "Check ho raha hai...", link = "internet")
+            Monitor.Status.AWAY -> Card("Internet", note = "Monitor ruka hua: ${l.reason}", link = "internet")
+            Monitor.Status.ONLINE -> Card("Internet  ·  Online", good = true, link = "internet", rows = listOf(
+                Row("Google DNS", ms(l.googleMs)),
+                Row("Cloudflare", ms(l.cloudMs)),
+                Row("Your ISP", if (l.ispLearned) ms(l.ispMs) else "--")
+            ))
+            Monitor.Status.DOWN -> Card("Internet connection problem", good = false, link = "internet",
+                note = l.reason.ifBlank { null },
+                rows = listOf(
+                    Row("Router", if (l.routerMs != null) "Online" else "Offline"),
+                    Row("ISP", when { l.kind == OutageStore.Kind.INTERNET -> "Online"; l.ispLearned -> "Unreachable"; else -> "Unreachable?" }),
+                    Row("Internet", "Offline"),
+                    Row("Started", timeFmt.format(java.util.Date(l.since))),
+                    Row("Duration", dur(System.currentTimeMillis() - l.since))
+                ))
+        }
+        box.addView(cardView(card))
+    }
+
+    /** Keeps [box] updated with the monitor's live status while the screen is open. */
+    private fun watchLive(box: LinearLayout) {
+        liveJob?.cancel()
+        liveJob = scope.launch {
+            Monitor.live.collect { renderLive(box, it) }
+        }
+    }
+
+    private fun usageTiles(): View {
+        val cur = UsageStore.current(this)
+        val daysLeft = ((cur.end - System.currentTimeMillis()) / 86_400_000L).coerceAtLeast(0)
+        val monthStart = cur.start
+        val outs = OutageStore.all(this).filter { it.start >= monthStart && it.kind != OutageStore.Kind.UNSEEN }
+        return tileRow(
+            tile("Data (is package)", UsageStore.fmt(cur.total), "$daysLeft din baqi", null) { show("usage") },
+            tile("Internet band hua", "${outs.size} dafa", if (outs.isEmpty()) "Is package mein" else dur(outs.sumOf { it.durationMs }) + " total",
+                if (outs.isEmpty()) true else null) { show("internet") }
+        )
+    }
+
+    private fun showInternet() {
+        screenTitle.text = "Internet monitor"
+        statusText.text = "Internet kab band hua, kitni der"
+
+        val liveBox = box()
+        content.addView(liveBox)
+        watchLive(liveBox)
+
+        // controls
+        val sw = SwitchMaterial(this).apply { isChecked = Monitor.isEnabled(this@MainActivity) }
+        sw.setOnCheckedChangeListener { _, on -> Monitor.setEnabled(this, on); renderLive(liveBox, Monitor.live.value) }
+        content.addView(baseCard().apply {
+            addView(box().apply {
+                addView(controlRow("Background monitor", "Har 15 second check. Sirf jab ye phone ghar ke WiFi par ho.", sw))
+                val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+                if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                    addView(divider())
+                    addView(actionRow("Battery saver", "Phone monitor ko band kar sakta hai", "Allow") {
+                        try {
+                            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                        } catch (_: Exception) {
+                            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        }
+                    })
+                }
+            })
+        })
+
+        // history by month
+        val all = OutageStore.all(this)
+        if (all.isEmpty()) {
+            content.addView(noteText("Abhi tak koi outage record nahi hua."))
+            return
+        }
+        all.groupBy { monthFmt.format(java.util.Date(it.start)) }.forEach { (month, list) ->
+            val real = list.filter { it.kind != OutageStore.Kind.UNSEEN }
+            content.addView(groupHeader("$month  ·  ${real.size} outage${if (real.size == 1) "" else "s"}  ·  ${dur(real.sumOf { it.durationMs })}"))
+            content.addView(baseCard().apply {
+                addView(box().apply {
+                    list.forEachIndexed { i, o ->
+                        if (i > 0) addView(divider())
+                        val title = "${dayFmt.format(java.util.Date(o.start))}  ·  ${timeFmt.format(java.util.Date(o.start))}"
+                        val right = if (o.kind == OutageStore.Kind.UNSEEN) "reconnect" else (if (o.approx) "~" else "") + dur(o.durationMs)
+                        addView(menuRow("$title      $right", o.kind.label + (if (o.reason.isNotBlank() && o.kind != OutageStore.Kind.UNSEEN) "\n${o.reason}" else "")) {
+                            val msg = buildString {
+                                append("Shuru: ${dayFmt.format(java.util.Date(o.start))}, ${timeFmt.format(java.util.Date(o.start))}\n")
+                                if (o.end > 0 && o.kind != OutageStore.Kind.UNSEEN) append("Khatam: ${timeFmt.format(java.util.Date(o.end))}\nDer: ${dur(o.durationMs)}\n")
+                                append("Wajah: ${o.kind.label}\n")
+                                if (o.reason.isNotBlank()) append("${o.reason}\n")
+                                if (o.approx) append("\nYe waqt andaza hai - us waqt app check nahi kar rahi thi.")
+                            }
+                            AlertDialog.Builder(this@MainActivity).setTitle("Outage").setMessage(msg)
+                                .setPositiveButton("Close", null)
+                                .setNegativeButton("Delete") { _, _ -> OutageStore.remove(this@MainActivity, o); show("internet", push = false) }
+                                .show()
+                        })
+                    }
+                })
+            })
+        }
+        content.addView(textButton("Saari outage history saaf karein") {
+            confirm("History saaf karein?", "Saare outage records hata diye jayenge.") {
+                OutageStore.clear(this); show("internet", push = false)
+            }
+        })
+    }
+
+    private fun showUsage() {
+        screenTitle.text = "Data usage"
+        statusText.text = "Package ke hisaab se mahine ka data"
+        val cur = UsageStore.current(this)
+        val now = System.currentTimeMillis()
+        val daysLeft = ((cur.end - now) / 86_400_000L).coerceAtLeast(0)
+        val full = java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.US)
+
+        content.addView(cardView(Card(
+            "${dayFmt.format(java.util.Date(cur.start))} – ${dayFmt.format(java.util.Date(cur.end))}",
+            big = UsageStore.fmt(cur.total),
+            rows = listOf(
+                Row("Download", UsageStore.fmt(cur.totalDown)),
+                Row("Upload", UsageStore.fmt(cur.totalUp)),
+                Row("Package renew", "${full.format(java.util.Date(cur.end))}  ($daysLeft din)")
+            )
+        )))
+
+        val tpState = Monitor.live.value.tpState
+        content.addView(cardView(Card("Kahan se", rows = listOf(
+            Row("Huawei WiFi (sab devices)", UsageStore.fmt(cur.huaweiDown + cur.huaweiUp)),
+            Row("TP-Link devices", UsageStore.fmt(cur.tpDown + cur.tpUp))
+        ), note = "Huawei ka number router ke apne counter se hai (pakka). TP-Link ka har device ki live speed jor kar hai (andaza), " +
+            "aur sirf tab ginta hai jab ye phone TP-Link WiFi par ho." + if (tpState.isNotBlank() && !tpState.startsWith("OK")) "\n\nAbhi: $tpState" else "")))
+
+        // per device
+        val devs = cur.devices.filter { it.down + it.up > 0 }
+        content.addView(groupHeader("Device-wise (TP-Link)"))
+        if (devs.isEmpty()) {
+            content.addView(noteText("Abhi koi data nahi. TP-Link password neeche daalein, phir ye phone TP-Link WiFi par rakhein."))
+        } else {
+            content.addView(baseCard().apply {
+                addView(box().apply {
+                    setPadding(0, dp(6), 0, dp(6))
+                    val max = devs.maxOf { it.down + it.up }.coerceAtLeast(1)
+                    devs.forEachIndexed { i, d ->
+                        if (i > 0) addView(divider())
+                        addView(usageRow(d.name.ifBlank { d.mac }, "↓ ${UsageStore.fmt(d.down)}   ↑ ${UsageStore.fmt(d.up)}",
+                            UsageStore.fmt(d.down + d.up), (d.down + d.up).toFloat() / max))
+                    }
+                })
+            })
+        }
+
+        // TP-Link setup
+        val pass = textField("TP-Link admin password", Monitor.tpPassword(this).orEmpty(), password = true)
+        val host = textField("TP-Link address", Monitor.tpHost(this))
+        content.addView(groupHeader("TP-Link (sirf parhna)"))
+        content.addView(formCard(null, host, pass))
+        content.addView(primaryButton("TP-Link save karein") {
+            Monitor.setTpLink(this, host.get().ifBlank { "192.168.0.1" }, pass.get().ifBlank { null })
+            Monitor.stop(this); Monitor.start(this)
+            Toast.makeText(this, "Saved - agle check mein data aana shuru hoga", Toast.LENGTH_SHORT).show()
+        })
+
+        // cycle settings
+        content.addView(groupHeader("Package"))
+        val day = UsageStore.cycleDay(this)
+        content.addView(menuCard(
+            Triple("Renew tareekh: har mahine $day", "Is din raat 12 baje mahina history mein chala jata hai") {
+                val days = (1..28).map { it.toString() }.toTypedArray()
+                AlertDialog.Builder(this).setTitle("Package kis tareekh ko renew hota hai?")
+                    .setSingleChoiceItems(days, day - 1) { dlg, which ->
+                        UsageStore.setCycleDay(this, which + 1); dlg.dismiss(); show("usage", push = false)
+                    }.show()
+            },
+            Triple("Abhi reset karein", "Ab tak ka data history mein save, phir zero se") {
+                confirm("Reset karein?", "Ab tak ka data history mein save ho jayega aur ginti zero se shuru hogi.") {
+                    UsageStore.resetNow(this); show("usage", push = false)
+                }
+            }
+        ))
+
+        // history
+        val hist = UsageStore.history(this)
+        if (hist.isNotEmpty()) {
+            content.addView(groupHeader("Pichle mahine"))
+            content.addView(baseCard().apply {
+                addView(box().apply {
+                    hist.forEachIndexed { i, h ->
+                        if (i > 0) addView(divider())
+                        val title = "${dayFmt.format(java.util.Date(h.start))} – ${dayFmt.format(java.util.Date(h.end))}${if (h.manual) " (reset)" else ""}"
+                        addView(menuRow("$title      ${UsageStore.fmt(h.total)}", "↓ ${UsageStore.fmt(h.totalDown)}   ↑ ${UsageStore.fmt(h.totalUp)}") {
+                            val msg = buildString {
+                                append("Total: ${UsageStore.fmt(h.total)}\n")
+                                append("Huawei WiFi: ${UsageStore.fmt(h.huaweiDown + h.huaweiUp)}\n")
+                                append("TP-Link: ${UsageStore.fmt(h.tpDown + h.tpUp)}\n")
+                                h.devices.sortedByDescending { it.down + it.up }.forEach { d ->
+                                    append("\n${d.name.ifBlank { d.mac }}: ${UsageStore.fmt(d.down + d.up)}")
+                                }
+                            }
+                            AlertDialog.Builder(this@MainActivity).setTitle(title).setMessage(msg)
+                                .setPositiveButton("Close", null)
+                                .setNegativeButton("Delete") { _, _ ->
+                                    confirm("Delete karein?", "Ye mahina history se hat jayega.") {
+                                        UsageStore.deleteHistory(this@MainActivity, h); show("usage", push = false)
+                                    }
+                                }.show()
+                        })
+                    }
+                })
+            })
+        }
+    }
+
+    private fun usageRow(title: String, sub: String, value: String, fraction: Float) = box().apply {
+        setPadding(dp(18), dp(10), dp(18), dp(10))
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(TextView(context).apply {
+                text = title; textSize = 15f; setTextColor(color(R.color.textPrimary))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(TextView(context).apply { text = value; textSize = 15f; setTypeface(typeface, Typeface.BOLD); setTextColor(color(R.color.textPrimary)) })
+        })
+        addView(TextView(context).apply { text = sub; textSize = 12.5f; setTextColor(color(R.color.textSecondary)) })
+        addView(LinearLayout(context).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(4)).apply { topMargin = dp(6) }
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = dp(2).toFloat(); setColor(color(R.color.divider)) }
+            addView(View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, fraction.coerceIn(0.02f, 1f))
+                background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = dp(2).toFloat(); setColor(color(R.color.primary)) }
+            })
+            addView(View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, (1f - fraction).coerceIn(0f, 0.98f))
+            })
+        })
+    }
 
     /* ------------------------------------------------------------------ */
     /*  Internet speed test                                                 */

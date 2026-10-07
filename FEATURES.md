@@ -10,6 +10,19 @@
 - Every change is checked by reading the router again after saving - if the router didn't apply it, the app says so.
 - Login details are remembered on the phone.
 
+## Internet monitor (new)
+- Runs in the background while this phone is on the home WiFi (Huawei or TP-Link). Checks every 15 s: router, your ISP, Google DNS (8.8.8.8), Cloudflare (1.1.1.1). Checks are pinned to WiFi, so they still work when Android switches to mobile data.
+- Home card: Online + ms for Google / Cloudflare / ISP. When down: Router / ISP / Internet status, start time, duration, and the router's own reason (fibre LOS, ISP connection failed, or ISP connected but no internet).
+- Alert notification when the internet goes down (after ~30 s) and when it comes back, with how long it was down.
+- History by month (count + total time). Tap an outage to see details or delete it.
+- If the app wasn't watching (phone away / killed), it checks the router's WAN uptime when it comes back and logs "reconnected at ..." without a guessed duration.
+
+## Data usage (new)
+- Cycle = your package: renews on the 3rd at 12:00 AM (changeable). At renewal the month goes to history automatically and counting starts from zero. Manual reset also saves to history. History entries can be deleted.
+- Huawei WiFi: exact, from the router's own byte counters (all Huawei WiFi devices together - this firmware has no per-device count).
+- TP-Link devices: per device, from the TP-Link's live speed per device added up every 15 s (estimate). READ ONLY - the app never changes anything on the TP-Link. Only counted while this phone is on the TP-Link WiFi (the TP-Link can't be reached from the Huawei side).
+- Not counted: devices on Huawei LAN cable ports other than the TP-Link.
+
 ## Speed limit per device
 The Huawei HG8546M (firmware V3R017) has **no per-device speed limit** in its firmware - QoS and "Intelligent Channel" only set priority, and the only rate limits are for the whole line (QoS total bandwidth) or a guest WiFi, which this router's firmware doesn't offer. So per-device speed limit is not in the app. Per-device **block** is available.
 

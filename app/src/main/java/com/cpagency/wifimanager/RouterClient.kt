@@ -46,6 +46,9 @@ class RouterClient(private val baseUrl: String = "http://192.168.100.1") {
 
     private val client = OkHttpClient.Builder()
         .cookieJar(cookieJar)
+        // stay on WiFi even when Android moves internet traffic to mobile data
+        // (happens exactly when the home internet is down)
+        .socketFactory(NetUtil.WifiSocketFactory)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .addInterceptor { chain ->
