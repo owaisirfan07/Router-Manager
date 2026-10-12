@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "VeyronMonitor"
+rootProject.name = "WifiManager"
 include(":app")

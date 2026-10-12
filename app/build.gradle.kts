@@ -3,30 +3,40 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Set by GitHub Actions (see .github/workflows/build.yml). Local builds use the defaults below.
+val ciVersionCode = System.getenv("VERSION_CODE")?.toIntOrNull()
+val ciVersionName = System.getenv("VERSION_NAME")
+val signingKeystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
+val signingPassword = System.getenv("SIGNING_PASSWORD")?.trim()
+
 android {
-    namespace = "com.veyronmonitor.app"
+    namespace = "com.cpagency.wifimanager"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.veyronmonitor.app"
+        applicationId = "com.cpagency.wifimanager"
         minSdk = 24
         targetSdk = 34
-        versionCode = 28
-        versionName = "1.27"
+        versionCode = ciVersionCode ?: 2
+        versionName = ciVersionName ?: "1.1"
     }
 
+    // Same key on every build, so the phone accepts each new APK as an update.
     signingConfigs {
-        getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (signingKeystorePath != null && signingPassword != null) {
+            create("release") {
+                storeFile = file(signingKeystorePath)
+                storePassword = signingPassword
+                keyAlias = "routermanager"
+                keyPassword = signingPassword
+            }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -34,40 +44,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
     kotlinOptions {
         jvmTarget = "17"
-    }
-
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
-
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
     }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
-    implementation("androidx.activity:activity-compose:1.9.1")
-
-    val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
-    implementation(composeBom)
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation("androidx.work:work-runtime-ktx:2.9.1")
 }
