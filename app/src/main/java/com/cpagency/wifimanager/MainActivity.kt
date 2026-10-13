@@ -85,7 +85,18 @@ class MainActivity : AppCompatActivity() {
         if (loggedIn) show(target) else pendingOpen = target
     }
 
+    private fun applyTheme() {
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
+            when (getSharedPreferences("ui", MODE_PRIVATE).getInt("theme", 0)) {
+                1 -> androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO
+                2 -> androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES
+                else -> androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+            }
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        applyTheme()
         super.onCreate(savedInstanceState)
         NetUtil.appContext = applicationContext
         pendingOpen = intent?.getStringExtra("open")
@@ -177,7 +188,7 @@ class MainActivity : AppCompatActivity() {
             scope.launch {
                 try {
                     withContext(Dispatchers.IO) { client.login(user, pass) }
-                    prefs.edit().putString("ip", ip).putString("user", user).putString("pass", pass).apply()
+                    prefs.edit().putString("ip", ip).putString("user", user).putString("pass", pass).putBoolean("auto", true).apply()
                     loggedIn = true
                     RouterSession.client = client
                     Monitor.start(this@MainActivity)
@@ -199,11 +210,25 @@ class MainActivity : AppCompatActivity() {
 
         saveButton.setOnClickListener { saveWifi() }
 
+        // auto login with the saved details (turned off when you log out yourself)
+        if (prefs.getBoolean("auto", true) &&
+            !prefs.getString("ip", null).isNullOrBlank() && !prefs.getString("user", null).isNullOrBlank() &&
+            prefs.getString("pass", null) != null) {
+            statusText.text = "Logging in..."
+            if (savedInstanceState?.getString("screen") != null) pendingOpen = pendingOpen ?: savedInstanceState.getString("screen")
+            loginButton.post { loginButton.performClick() }
+        }
+
         // speed test works without logging in to the router
         findViewById<Button>(R.id.speedTestButton).setOnClickListener {
             stack.clear()
             show("speedtest")
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (loggedIn) stack.lastOrNull()?.let { outState.putString("screen", it) }
     }
 
     override fun onDestroy() {
@@ -252,6 +277,8 @@ class MainActivity : AppCompatActivity() {
             screen == "home" -> showDashboard()
             screen == "devices" -> showDevices()
             screen.startsWith("device:") -> showDevice(screen.removePrefix("device:"))
+            screen.startsWith("tpdev:") -> showTpDevice(screen.removePrefix("tpdev:"))
+            screen == "fibre" -> showFibreHistory()
             screen == "settings" -> showSettings()
             screen == "more" -> showMore()
             screen.startsWith("group:") -> showGroup(screen.removePrefix("group:"))
@@ -277,11 +304,12 @@ class MainActivity : AppCompatActivity() {
         show(stack.last(), push = false)
     }
 
-    private fun logout() {
+    private fun logout(manual: Boolean = false) {
         loadJob?.cancel()
         pollJob?.cancel()
         liveJob?.cancel()
         speedTest?.stop()
+        if (manual) getSharedPreferences("login", MODE_PRIVATE).edit().putBoolean("auto", false).apply()
         loggedIn = false
         stack.clear()
         navRow.visibility = View.GONE
@@ -336,17 +364,15 @@ class MainActivity : AppCompatActivity() {
             val data = withContext(Dispatchers.IO) { client.loadSection(Sections.home) }
             body.removeAllViews()
 
+            // internet card only when something is wrong - the hero already says "Online"
             val liveBox = box()
             body.addView(liveBox)
-            watchLive(liveBox)
-            body.addView(usageTiles())
+            watchLive(liveBox, homeOnly = true)
 
             val wan = Custom.internetWan(data)
             val up = wan?.get("ConnectionStatus") == "Connected"
             val devs = Custom.devices(data)
             val online = devs.filter { it["DevStatus"].equals("Online", true) }
-            val wifiN = online.count { it["PortType"] == "WIFI" }
-            val cableN = online.size - wifiN
             val info = data.first("stDeviceInfo")
             val optic = data.first("stOpticInfo")
             val rx = optic?.get("revOpticPower")?.trim().orEmpty()
@@ -363,22 +389,20 @@ class MainActivity : AppCompatActivity() {
             hero.update()
 
             val ssid = data.all("stWlanInfo").firstOrNull { it["ssid"].isNotBlank() }
+            val fibreOk = rxVal?.let { it in -27.0..-8.0 }
             body.addView(tileRow(
                 tile("Fibre signal", if (rxVal != null) "$rx dBm" else "--",
-                    when { rxVal == null -> "--"; rxVal in -27.0..-8.0 -> "Good"; else -> "Weak - check cable" },
-                    rxVal?.let { it in -27.0..-8.0 }) { show("opticinfo") },
-                tile("Devices", "${online.size} online", "$wifiN WiFi  ·  $cableN cable", null) { switchTab("devices") }
+                    when { rxVal == null -> "--"; fibreOk == true -> "Good  ·  see history"; else -> "Weak - check cable" },
+                    fibreOk) { show("fibre") },
+                tile("Health", if (up && fibreOk == true) "All good" else "Check",
+                    "Tap for diagnosis", if (up && fibreOk == true) true else null) { show("diagnose") }
             ))
-            body.addView(tileRow(
-                tile("WiFi", ssid?.get("ssid") ?: "--", if (ssid?.get("enable") == "1") "On  ·  2.4 GHz" else "Off", null) { show("wlaninfo") },
-                tile("Health", if (up && rxVal?.let { it in -27.0..-8.0 } == true) "All good" else "Check",
-                    "Tap for diagnosis", if (up && rxVal?.let { it in -27.0..-8.0 } == true) true else null) { show("diagnose") }
-            ))
+            body.addView(usageTiles())
 
             body.addView(groupHeader("Quick actions"))
             body.addView(menuCard(
-                Triple("Change WiFi name or password", ssid?.get("ssid") ?: "") { show("wifiEdit") },
-                Triple("Internet speed test", "Real download / upload speed") { show("speedtest") },
+                Triple("WiFi name or password", (ssid?.get("ssid") ?: "") + if (ssid?.get("enable") == "1") "  ·  On" else "  ·  Off") { show("wifiEdit") },
+                Triple("Internet speed test", "Real speed vs your package") { show("speedtest") },
                 Triple("Reboot router", "Restart the router (about 2 min)") { confirmReboot() }
             ))
             statusText.text = "Connected to ${client.baseUrlHost()}"
@@ -494,6 +518,41 @@ class MainActivity : AppCompatActivity() {
             }
             val nBlocked = filter?.rules?.size ?: 0
             if (nBlocked > 0) body.addView(noteText("$nBlocked device(s) have internet blocked."))
+
+            // ---- TP-Link (view only) ----
+            if (Monitor.tpPassword(this@MainActivity) != null) {
+                val tpList = withContext(Dispatchers.IO) {
+                    runCatching {
+                        TpLinkClient(Monitor.tpHost(this@MainActivity)).apply { setPassword(Monitor.tpPassword(this@MainActivity)!!) }.stations()
+                    }.getOrElse { Monitor.tpStations.value }
+                }
+                val usage = UsageStore.current(this@MainActivity).devices.associateBy { it.mac }
+                body.addView(groupHeader("On TP-Link (${tpList.count { it.online }} online · view only)"))
+                if (tpList.isEmpty()) {
+                    body.addView(noteText("TP-Link not reachable. Its devices show here when this phone is on the TP-Link WiFi."))
+                } else {
+                    body.addView(baseCard().apply {
+                        addView(box().apply {
+                            tpList.sortedByDescending { it.online }.forEachIndexed { i, st ->
+                                if (i > 0) addView(divider())
+                                val used = usage[st.mac]?.let { "  ·  ${UsageStore.fmt(it.down + it.up)} this cycle" } ?: ""
+                                val speed = if (st.online) "↓ ${rate(st.downBps)}  ↑ ${rate(st.upBps)}" else st.ip
+                                addView(deviceRow(DeviceStore.display(this@MainActivity, st.mac, st.name), speed + used, st.online, null) {
+                                    show("tpdev:${st.mac}")
+                                })
+                            }
+                        })
+                    })
+                }
+            }
+
+            // ---- alerts ----
+            val alertSw = SwitchMaterial(this@MainActivity).apply { isChecked = DeviceStore.alertsOn(this@MainActivity) }
+            alertSw.setOnCheckedChangeListener { _, on -> DeviceStore.setAlertsOn(this@MainActivity, on) }
+            body.addView(groupHeader("Alerts"))
+            body.addView(baseCard().apply {
+                addView(controlRow("New device alert", "Notify me when a device the app has never seen joins the WiFi", alertSw))
+            })
             statusText.text = "${online.size} online · tap a device for controls"
         }
     }
@@ -504,7 +563,7 @@ class MainActivity : AppCompatActivity() {
         list.forEachIndexed { i, d ->
             if (i > 0) b.addView(divider())
             val mac = d["MacAddr"]
-            val name = d["HostName"].ifBlank { d["DevType"].ifBlank { "Unknown device" } }
+            val name = DeviceStore.display(this, mac, d["HostName"].ifBlank { d["DevType"].ifBlank { "Unknown device" } })
             val via = if (d["PortType"] == "WIFI") "WiFi" else "Cable ${d["Port"]}"
             val tag = when {
                 d["IpAddr"] in mine -> "This phone"
@@ -560,7 +619,7 @@ class MainActivity : AppCompatActivity() {
             body.removeAllViews()
             val dev = Custom.devices(data).firstOrNull { it["MacAddr"].equals(mac, true) }
                 ?: throw IllegalStateException("Device not found any more")
-            val name = dev["HostName"].ifBlank { dev["DevType"].ifBlank { "Unknown device" } }
+            val name = DeviceStore.display(this@MainActivity, mac, dev["HostName"].ifBlank { dev["DevType"].ifBlank { "Unknown device" } })
             screenTitle.text = name
             val isMe = dev["IpAddr"] in myIps()
             val blocked = filter?.let { actions.isBlocked(mac, it) } == true
@@ -604,9 +663,66 @@ class MainActivity : AppCompatActivity() {
                 }
             })
 
+            b.addView(divider())
+            b.addView(actionRow("Name on this phone", DeviceStore.nickname(this@MainActivity, mac) ?: "Not set (uses the router's name)", "Rename") {
+                renameDevice(mac, name) { show("device:$mac", push = false) }
+            })
+
             card.addView(b)
             body.addView(card)
             statusText.text = mac
+        }
+    }
+
+    /** Bytes per second -> megabits per second (same unit as the internet package). */
+    private fun rate(bytesPerSec: Long): String {
+        val bits = bytesPerSec * 8.0
+        return when {
+            bits >= 1e6 -> "%.1f Mbps".format(bits / 1e6)
+            bits >= 1e3 -> "%.0f Kbps".format(bits / 1e3)
+            else -> "0 Kbps"
+        }
+    }
+
+    private fun renameDevice(mac: String, current: String, done: () -> Unit) {
+        val f = textField("Name", DeviceStore.nickname(this, mac) ?: "", hint = "Only saved on this phone. Leave empty to use the router's name.")
+        val wrap = box().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f.view) }
+        AlertDialog.Builder(this).setTitle("Rename $current").setView(wrap)
+            .setPositiveButton("Save") { _, _ -> DeviceStore.setNickname(this, mac, f.get()); done() }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    /** A device on the TP-Link router (view only - nothing is changed on the TP-Link). */
+    private fun showTpDevice(mac: String) {
+        screenTitle.text = "Device"
+        statusText.text = "On TP-Link · view only"
+        val body = box()
+        content.addView(body)
+        load(body) {
+            val st = withContext(Dispatchers.IO) {
+                runCatching {
+                    TpLinkClient(Monitor.tpHost(this@MainActivity)).apply { setPassword(Monitor.tpPassword(this@MainActivity) ?: "") }.stations()
+                }.getOrElse { Monitor.tpStations.value }
+            }.firstOrNull { it.mac.equals(mac, true) }
+            body.removeAllViews()
+            val name = DeviceStore.display(this@MainActivity, mac, st?.name)
+            screenTitle.text = name
+            val used = UsageStore.current(this@MainActivity).devices.firstOrNull { it.mac.equals(mac, true) }
+            val first = DeviceStore.firstSeen(this@MainActivity, mac)
+            val rows = listOfNotNull(
+                Row("Status", if (st?.online == true) "Online" else "Offline"),
+                st?.let { Row("IP address", it.ip) },
+                Row("MAC address", mac),
+                st?.takeIf { it.online }?.let { Row("Speed now", "↓ ${rate(it.downBps)}   ↑ ${rate(it.upBps)}") },
+                used?.let { Row("Data this cycle", "${UsageStore.fmt(it.down + it.up)}  (↓ ${UsageStore.fmt(it.down)} ↑ ${UsageStore.fmt(it.up)})") },
+                if (first > 0) Row("First seen", java.text.SimpleDateFormat("d MMM yyyy, h:mm a", java.util.Locale.UK).format(java.util.Date(first))) else null
+            )
+            body.addView(cardView(Card(name, rows, note = "This device is on the TP-Link router. The app only reads the TP-Link, so blocking is not available here.")))
+            body.addView(baseCard().apply {
+                addView(actionRow("Name on this phone", DeviceStore.nickname(this@MainActivity, mac) ?: "Not set", "Rename") {
+                    renameDevice(mac, name) { show("tpdev:$mac", push = false) }
+                })
+            })
         }
     }
 
@@ -656,10 +772,23 @@ class MainActivity : AppCompatActivity() {
             Triple("Fixed IPs", "Always give a device the same IP") { show("edit:static") },
             Triple("Router IP address", "The router's own LAN address") { show("edit:lan") }
         ))
+        content.addView(groupHeader("App"))
+        val modes = listOf("System default", "Light", "Dark")
+        val cur = getSharedPreferences("ui", MODE_PRIVATE).getInt("theme", 0)
+        content.addView(menuCard(
+            Triple("Theme: ${modes[cur]}", "Light or dark look") {
+                AlertDialog.Builder(this).setTitle("Theme")
+                    .setSingleChoiceItems(modes.toTypedArray(), cur) { dlg, which ->
+                        getSharedPreferences("ui", MODE_PRIVATE).edit().putInt("theme", which).apply()
+                        dlg.dismiss()
+                        applyTheme()
+                    }.show()
+            }
+        ))
         content.addView(groupHeader("System"))
         content.addView(menuCard(
             Triple("Reboot router", "Restart the router (about 2 min)") { confirmReboot() },
-            Triple("Log out", "Back to the login screen") { logout() }
+            Triple("Log out", "Back to the login screen (stops auto login)") { logout(manual = true) }
         ))
     }
 
@@ -987,9 +1116,10 @@ class MainActivity : AppCompatActivity() {
         statusText.text = "Tools and full router information"
         content.addView(groupHeader("Tools"))
         content.addView(menuCard(
-            Triple("Internet monitor", "Internet kab band hua, kitni der") { show("internet") },
-            Triple("Data usage", "Mahine ka data, device-wise") { show("usage") },
-            Triple("Internet speed test", "Real download / upload speed") { show("speedtest") },
+            Triple("Internet monitor", "Outages: when and how long") { show("internet") },
+            Triple("Data usage", "Monthly data, per device") { show("usage") },
+            Triple("Internet speed test", "Real speed vs your package") { show("speedtest") },
+            Triple("Fibre signal history", "Rx power over time") { show("fibre") },
             Triple("One-click diagnosis", "Fibre, ISP registration, LAN ports") { show("diagnose") },
             Triple("All connected devices (details)", "Full list with DHCP lease times") { show("devices_info") }
         ))
@@ -1340,12 +1470,12 @@ class MainActivity : AppCompatActivity() {
     private fun renderLive(box: LinearLayout, l: Monitor.Live) {
         box.removeAllViews()
         if (!Monitor.isEnabled(this)) {
-            box.addView(cardView(Card("Internet", note = "Internet monitor band hai. Internet tab mein on karein.", link = "internet")))
+            box.addView(cardView(Card("Internet", note = "Internet monitor is off. Turn it on in Internet monitor.", link = "internet")))
             return
         }
         val card = when (l.status) {
-            Monitor.Status.STARTING -> Card("Internet", note = "Check ho raha hai...", link = "internet")
-            Monitor.Status.AWAY -> Card("Internet", note = "Monitor ruka hua: ${l.reason}", link = "internet")
+            Monitor.Status.STARTING -> Card("Internet", note = "Checking...", link = "internet")
+            Monitor.Status.AWAY -> Card("Internet", note = "Monitor paused: ${l.reason}", link = "internet")
             Monitor.Status.ONLINE -> Card("Internet  ·  Online", good = true, link = "internet", rows = listOf(
                 Row("Google DNS", ms(l.googleMs)),
                 Row("Cloudflare", ms(l.cloudMs)),
@@ -1362,14 +1492,53 @@ class MainActivity : AppCompatActivity() {
                 ))
         }
         box.addView(cardView(card))
+        if (l.status == Monitor.Status.DOWN && l.routerMs != null) {
+            box.addView(textButton("Send complaint to ISP") {
+                reportToIsp(OutageStore.Outage(l.since, 0, l.kind ?: OutageStore.Kind.ISP, l.reason))
+            })
+        }
     }
 
     /** Keeps [box] updated with the monitor's live status while the screen is open. */
-    private fun watchLive(box: LinearLayout) {
+    private fun watchLive(box: LinearLayout, homeOnly: Boolean = false) {
         liveJob?.cancel()
         liveJob = scope.launch {
-            Monitor.live.collect { renderLive(box, it) }
+            Monitor.live.collect {
+                if (homeOnly && (it.status == Monitor.Status.ONLINE || it.status == Monitor.Status.STARTING || !Monitor.isEnabled(this@MainActivity))) box.removeAllViews()
+                else renderLive(box, it)
+            }
         }
+    }
+
+    /**
+     * Opens the share sheet (WhatsApp, SMS, email...) with a ready complaint
+     * message for the ISP: when it went down, for how long, the reason, the
+     * fibre signal and the account (PPPoE) username.
+     */
+    private fun reportToIsp(o: OutageStore.Outage) {
+        val full = java.text.SimpleDateFormat("d MMM yyyy, h:mm a", java.util.Locale.US)
+        val last = FibreStore.all(this).lastOrNull()
+        val msg = buildString {
+            append("Hello, I want to report an internet problem.\n\n")
+            PlanStore.account(this@MainActivity)?.takeIf { it.isNotBlank() }?.let { append("Account (PPPoE username): $it\n") }
+            append("Down since: ${full.format(java.util.Date(o.start))}\n")
+            if (o.end > 0) append("Back at: ${full.format(java.util.Date(o.end))}\n")
+            append("${if (o.end > 0) "Total time down" else "Down for"}: ${dur(o.durationMs)}\n")
+            append("Problem: ${o.kind.label}\n")
+            if (o.reason.isNotBlank()) append("Detail: ${o.reason}\n")
+            if (last != null && System.currentTimeMillis() - last.at < 6 * 3_600_000L) {
+                append("Fibre signal (Rx): %.2f dBm (normal range -8 to -27)\n".format(last.rx))
+            }
+            val month = OutageStore.all(this@MainActivity).filter {
+                it.kind != OutageStore.Kind.UNSEEN && System.currentTimeMillis() - it.start < 30L * 86_400_000L
+            }
+            if (month.size > 1) append("Outages in the last 30 days: ${month.size} (total ${dur(month.sumOf { it.durationMs })})\n")
+            append("\nMy router is on and working. Please check the line / your side and fix it. Thank you.")
+        }
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+            .putExtra(Intent.EXTRA_SUBJECT, "Internet outage complaint")
+            .putExtra(Intent.EXTRA_TEXT, msg)
+        startActivity(Intent.createChooser(send, "Send complaint with"))
     }
 
     private fun usageTiles(): View {
@@ -1378,15 +1547,15 @@ class MainActivity : AppCompatActivity() {
         val monthStart = cur.start
         val outs = OutageStore.all(this).filter { it.start >= monthStart && it.kind != OutageStore.Kind.UNSEEN }
         return tileRow(
-            tile("Data (is package)", UsageStore.fmt(cur.total), "$daysLeft din baqi", null) { show("usage") },
-            tile("Internet band hua", "${outs.size} dafa", if (outs.isEmpty()) "Is package mein" else dur(outs.sumOf { it.durationMs }) + " total",
+            tile("Data this cycle", UsageStore.fmt(cur.total), "$daysLeft day${if (daysLeft == 1L) "" else "s"} left", null) { show("usage") },
+            tile("Outages", "${outs.size}", if (outs.isEmpty()) "None this cycle" else dur(outs.sumOf { it.durationMs }) + " in total",
                 if (outs.isEmpty()) true else null) { show("internet") }
         )
     }
 
     private fun showInternet() {
         screenTitle.text = "Internet monitor"
-        statusText.text = "Internet kab band hua, kitni der"
+        statusText.text = "When the internet went down, and for how long"
 
         val liveBox = box()
         content.addView(liveBox)
@@ -1397,11 +1566,11 @@ class MainActivity : AppCompatActivity() {
         sw.setOnCheckedChangeListener { _, on -> Monitor.setEnabled(this, on); renderLive(liveBox, Monitor.live.value) }
         content.addView(baseCard().apply {
             addView(box().apply {
-                addView(controlRow("Background monitor", "Har 15 second check. Sirf jab ye phone ghar ke WiFi par ho.", sw))
+                addView(controlRow("Background monitor", "Checks every 15 seconds, only while this phone is on the home WiFi.", sw))
                 val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
                 if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                     addView(divider())
-                    addView(actionRow("Battery saver", "Phone monitor ko band kar sakta hai", "Allow") {
+                    addView(actionRow("Battery saver", "The phone may stop the monitor in the background", "Allow") {
                         try {
                             startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
                         } catch (_: Exception) {
@@ -1409,13 +1578,15 @@ class MainActivity : AppCompatActivity() {
                         }
                     })
                 }
+                addView(divider())
+                addView(menuRow("Fibre signal history", "Rx power over the last 90 days") { show("fibre") })
             })
         })
 
         // history by month
         val all = OutageStore.all(this)
         if (all.isEmpty()) {
-            content.addView(noteText("Abhi tak koi outage record nahi hua."))
+            content.addView(noteText("No outages recorded yet."))
             return
         }
         all.groupBy { monthFmt.format(java.util.Date(it.start)) }.forEach { (month, list) ->
@@ -1429,31 +1600,103 @@ class MainActivity : AppCompatActivity() {
                         val right = if (o.kind == OutageStore.Kind.UNSEEN) "reconnect" else (if (o.approx) "~" else "") + dur(o.durationMs)
                         addView(menuRow("$title      $right", o.kind.label + (if (o.reason.isNotBlank() && o.kind != OutageStore.Kind.UNSEEN) "\n${o.reason}" else "")) {
                             val msg = buildString {
-                                append("Shuru: ${dayFmt.format(java.util.Date(o.start))}, ${timeFmt.format(java.util.Date(o.start))}\n")
-                                if (o.end > 0 && o.kind != OutageStore.Kind.UNSEEN) append("Khatam: ${timeFmt.format(java.util.Date(o.end))}\nDer: ${dur(o.durationMs)}\n")
-                                append("Wajah: ${o.kind.label}\n")
+                                append("Started: ${dayFmt.format(java.util.Date(o.start))}, ${timeFmt.format(java.util.Date(o.start))}\n")
+                                if (o.end > 0 && o.kind != OutageStore.Kind.UNSEEN) append("Ended: ${timeFmt.format(java.util.Date(o.end))}\nDuration: ${dur(o.durationMs)}\n")
+                                append("Cause: ${o.kind.label}\n")
                                 if (o.reason.isNotBlank()) append("${o.reason}\n")
-                                if (o.approx) append("\nYe waqt andaza hai - us waqt app check nahi kar rahi thi.")
+                                if (o.approx) append("\nThese times are approximate - the app was not checking at that moment.")
                             }
-                            AlertDialog.Builder(this@MainActivity).setTitle("Outage").setMessage(msg)
+                            val dlg = AlertDialog.Builder(this@MainActivity).setTitle("Outage").setMessage(msg)
                                 .setPositiveButton("Close", null)
                                 .setNegativeButton("Delete") { _, _ -> OutageStore.remove(this@MainActivity, o); show("internet", push = false) }
-                                .show()
+                            if (o.kind == OutageStore.Kind.ISP || o.kind == OutageStore.Kind.INTERNET) {
+                                dlg.setNeutralButton("Report to ISP") { _, _ -> reportToIsp(o) }
+                            }
+                            dlg.show()
                         })
                     }
                 })
             })
         }
-        content.addView(textButton("Saari outage history saaf karein") {
-            confirm("History saaf karein?", "Saare outage records hata diye jayenge.") {
+        content.addView(textButton("Clear all outage history") {
+            confirm("Clear history?", "All outage records will be deleted.") {
                 OutageStore.clear(this); show("internet", push = false)
             }
         })
     }
 
+    /* ------------------------------------------------------------------ */
+    /*  Fibre signal history                                                */
+    /* ------------------------------------------------------------------ */
+
+    private fun showFibreHistory() {
+        screenTitle.text = "Fibre signal"
+        statusText.text = "Optical receive power (Rx), saved every 15 minutes"
+        val days = FibreStore.daily(this)
+        val samples = FibreStore.all(this)
+        val last = samples.lastOrNull()
+
+        if (last != null) {
+            val ok = last.rx in -27.0..-8.0
+            content.addView(cardView(Card(
+                "Latest reading", big = "%.2f dBm".format(last.rx), good = ok,
+                note = if (ok) "Healthy. Normal range is -8 to -27 dBm (closer to -8 is stronger)."
+                       else if (last.rx < -27) "Weak. Below -27 dBm the internet can drop. Usually a dirty/bent fibre cable or a fault on the ISP side."
+                       else "Too strong (above -8 dBm). Unusual - tell the ISP.",
+                rows = listOfNotNull(
+                    Row("Time", java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.US).format(java.util.Date(last.at))),
+                    last.tx?.let { Row("Transmit (Tx)", "%.2f dBm".format(it)) },
+                    last.tempC?.let { Row("Module temperature", "%.0f °C".format(it)) }
+                )
+            )))
+        }
+
+        if (days.isEmpty()) {
+            content.addView(noteText("No history yet. The background monitor saves a reading every 15 minutes while this phone is on the home WiFi."))
+            return
+        }
+
+        content.addView(groupHeader("Daily average (last ${days.size} day${if (days.size == 1) "" else "s"})"))
+        content.addView(baseCard().apply {
+            addView(box().apply {
+                setPadding(dp(10), dp(14), dp(10), dp(10))
+                addView(FibreChart(context).apply { this.days = days })
+                addView(TextView(context).apply {
+                    text = "Line = daily average  ·  shaded = weakest to strongest that day  ·  green = healthy range"
+                    textSize = 11.5f; setTextColor(color(R.color.textSecondary)); setPadding(dp(8), dp(6), dp(8), 0)
+                })
+            })
+        })
+
+        // trend: last 7 days vs the 7 before
+        if (days.size >= 8) {
+            val recent = days.takeLast(7).map { it.avgRx }.average()
+            val before = days.dropLast(7).takeLast(7).map { it.avgRx }.average()
+            val diff = recent - before
+            content.addView(cardView(Card("Trend", rows = listOf(
+                Row("Last 7 days", "%.2f dBm".format(recent)),
+                Row("7 days before", "%.2f dBm".format(before)),
+                Row("Change", "%+.2f dB".format(diff))
+            ), note = when {
+                diff <= -1.5 -> "Signal is getting weaker. If it keeps dropping, ask the ISP to check the fibre line."
+                diff >= 1.5 -> "Signal got stronger (maybe the ISP fixed something)."
+                else -> "Stable."
+            }, good = if (diff <= -1.5) false else null)))
+        }
+
+        val worst = samples.minByOrNull { it.rx }
+        if (worst != null) {
+            content.addView(cardView(Card("Range", rows = listOf(
+                Row("Weakest", "%.2f dBm  (%s)".format(worst.rx, java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.US).format(java.util.Date(worst.at)))),
+                Row("Strongest", "%.2f dBm".format(samples.maxOf { it.rx })),
+                Row("Readings saved", "${samples.size}")
+            ))))
+        }
+    }
+
     private fun showUsage() {
         screenTitle.text = "Data usage"
-        statusText.text = "Package ke hisaab se mahine ka data"
+        statusText.text = "Data used in the current package cycle"
         val cur = UsageStore.current(this)
         val now = System.currentTimeMillis()
         val daysLeft = ((cur.end - now) / 86_400_000L).coerceAtLeast(0)
@@ -1465,22 +1708,22 @@ class MainActivity : AppCompatActivity() {
             rows = listOf(
                 Row("Download", UsageStore.fmt(cur.totalDown)),
                 Row("Upload", UsageStore.fmt(cur.totalUp)),
-                Row("Package renew", "${full.format(java.util.Date(cur.end))}  ($daysLeft din)")
+                Row("Package renews", "${full.format(java.util.Date(cur.end))}  ($daysLeft day${if (daysLeft == 1L) "" else "s"})")
             )
         )))
 
         val tpState = Monitor.live.value.tpState
-        content.addView(cardView(Card("Kahan se", rows = listOf(
-            Row("Huawei WiFi (sab devices)", UsageStore.fmt(cur.huaweiDown + cur.huaweiUp)),
+        content.addView(cardView(Card("Where it was used", rows = listOf(
+            Row("Huawei WiFi (all devices)", UsageStore.fmt(cur.huaweiDown + cur.huaweiUp)),
             Row("TP-Link devices", UsageStore.fmt(cur.tpDown + cur.tpUp))
-        ), note = "Huawei ka number router ke apne counter se hai (pakka). TP-Link ka har device ki live speed jor kar hai (andaza), " +
-            "aur sirf tab ginta hai jab ye phone TP-Link WiFi par ho." + if (tpState.isNotBlank() && !tpState.startsWith("OK")) "\n\nAbhi: $tpState" else "")))
+        ), note = "Huawei comes from the router's own counter (exact). TP-Link adds up each device's live speed (estimate), " +
+            "and only counts while this phone is on the TP-Link WiFi." + if (tpState.isNotBlank() && !tpState.startsWith("OK")) "\n\nNow: $tpState" else "")))
 
         // per device
         val devs = cur.devices.filter { it.down + it.up > 0 }
-        content.addView(groupHeader("Device-wise (TP-Link)"))
+        content.addView(groupHeader("Per device (TP-Link)"))
         if (devs.isEmpty()) {
-            content.addView(noteText("Abhi koi data nahi. TP-Link password neeche daalein, phir ye phone TP-Link WiFi par rakhein."))
+            content.addView(noteText("No data yet. Enter the TP-Link password below, then keep this phone on the TP-Link WiFi."))
         } else {
             content.addView(baseCard().apply {
                 addView(box().apply {
@@ -1488,7 +1731,7 @@ class MainActivity : AppCompatActivity() {
                     val max = devs.maxOf { it.down + it.up }.coerceAtLeast(1)
                     devs.forEachIndexed { i, d ->
                         if (i > 0) addView(divider())
-                        addView(usageRow(d.name.ifBlank { d.mac }, "↓ ${UsageStore.fmt(d.down)}   ↑ ${UsageStore.fmt(d.up)}",
+                        addView(usageRow(DeviceStore.display(this@MainActivity, d.mac, d.name), "↓ ${UsageStore.fmt(d.down)}   ↑ ${UsageStore.fmt(d.up)}",
                             UsageStore.fmt(d.down + d.up), (d.down + d.up).toFloat() / max))
                     }
                 })
@@ -1498,27 +1741,27 @@ class MainActivity : AppCompatActivity() {
         // TP-Link setup
         val pass = textField("TP-Link admin password", Monitor.tpPassword(this).orEmpty(), password = true)
         val host = textField("TP-Link address", Monitor.tpHost(this))
-        content.addView(groupHeader("TP-Link (sirf parhna)"))
+        content.addView(groupHeader("TP-Link (view only)"))
         content.addView(formCard(null, host, pass))
-        content.addView(primaryButton("TP-Link save karein") {
+        content.addView(primaryButton("Save TP-Link") {
             Monitor.setTpLink(this, host.get().ifBlank { "192.168.0.1" }, pass.get().ifBlank { null })
             Monitor.stop(this); Monitor.start(this)
-            Toast.makeText(this, "Saved - agle check mein data aana shuru hoga", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Saved - data will start from the next check", Toast.LENGTH_SHORT).show()
         })
 
         // cycle settings
         content.addView(groupHeader("Package"))
         val day = UsageStore.cycleDay(this)
         content.addView(menuCard(
-            Triple("Renew tareekh: har mahine $day", "Is din raat 12 baje mahina history mein chala jata hai") {
+            Triple("Renews on day $day of each month", "At midnight on this day the cycle moves to history") {
                 val days = (1..28).map { it.toString() }.toTypedArray()
-                AlertDialog.Builder(this).setTitle("Package kis tareekh ko renew hota hai?")
+                AlertDialog.Builder(this).setTitle("Which day does the package renew?")
                     .setSingleChoiceItems(days, day - 1) { dlg, which ->
                         UsageStore.setCycleDay(this, which + 1); dlg.dismiss(); show("usage", push = false)
                     }.show()
             },
-            Triple("Abhi reset karein", "Ab tak ka data history mein save, phir zero se") {
-                confirm("Reset karein?", "Ab tak ka data history mein save ho jayega aur ginti zero se shuru hogi.") {
+            Triple("Reset now", "Save the data so far to history, then start from zero") {
+                confirm("Reset now?", "The data so far will be saved to history and counting will start from zero.") {
                     UsageStore.resetNow(this); show("usage", push = false)
                 }
             }
@@ -1527,7 +1770,7 @@ class MainActivity : AppCompatActivity() {
         // history
         val hist = UsageStore.history(this)
         if (hist.isNotEmpty()) {
-            content.addView(groupHeader("Pichle mahine"))
+            content.addView(groupHeader("Previous cycles"))
             content.addView(baseCard().apply {
                 addView(box().apply {
                     hist.forEachIndexed { i, h ->
@@ -1539,13 +1782,13 @@ class MainActivity : AppCompatActivity() {
                                 append("Huawei WiFi: ${UsageStore.fmt(h.huaweiDown + h.huaweiUp)}\n")
                                 append("TP-Link: ${UsageStore.fmt(h.tpDown + h.tpUp)}\n")
                                 h.devices.sortedByDescending { it.down + it.up }.forEach { d ->
-                                    append("\n${d.name.ifBlank { d.mac }}: ${UsageStore.fmt(d.down + d.up)}")
+                                    append("\n${DeviceStore.display(this@MainActivity, d.mac, d.name)}: ${UsageStore.fmt(d.down + d.up)}")
                                 }
                             }
                             AlertDialog.Builder(this@MainActivity).setTitle(title).setMessage(msg)
                                 .setPositiveButton("Close", null)
                                 .setNegativeButton("Delete") { _, _ ->
-                                    confirm("Delete karein?", "Ye mahina history se hat jayega.") {
+                                    confirm("Delete this cycle?", "It will be removed from history.") {
                                         UsageStore.deleteHistory(this@MainActivity, h); show("usage", push = false)
                                     }
                                 }.show()
@@ -1586,9 +1829,23 @@ class MainActivity : AppCompatActivity() {
 
     private var speedTest: SpeedTest? = null
 
+    /** WiFi link of this phone right now: (link speed Mbps, signal dBm), or null if not on WiFi. */
+    private fun wifiLink(): Pair<Int, Int>? = try {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+        if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) != true) null
+        else {
+            @Suppress("DEPRECATION")
+            val info = (applicationContext.getSystemService(WIFI_SERVICE) as android.net.wifi.WifiManager).connectionInfo
+            if (info == null || info.linkSpeed <= 0) null else info.linkSpeed to info.rssi
+        }
+    } catch (_: Exception) { null }
+
+    private fun fmtMbps(v: Double) = if (v == Math.floor(v)) "%.0f".format(v) else "%.1f".format(v)
+
     private fun showSpeedTest() {
         screenTitle.text = "Speed Test"
-        statusText.text = "Real download / upload speed of this phone's internet"
+        statusText.text = "Real speed you get vs the package you pay for"
         wifiSection.visibility = View.GONE
         content.visibility = View.VISIBLE
         content.removeAllViews()
@@ -1642,11 +1899,87 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(startBtn)
 
-        content.addView(noteText("Tests this phone's connection using Cloudflare's speed servers (4 connections at once, like speedtest.net). On WiFi the result also depends on WiFi signal. Each test uses roughly 50-300 MB of data, so careful on mobile data."))
+        // package speed
+        val pd = PlanStore.downMbps(this); val pu = PlanStore.upMbps(this)
+        content.addView(menuCard(
+            Triple("Your package: " + (if (pd != null) "${fmtMbps(pd)} Mbps" + (pu?.let { " / ${fmtMbps(it)} up" } ?: "") else "not set"),
+                "Set the speed you pay for, to compare with the real result") { editPlan() }
+        ))
+
+        content.addView(noteText("Tests this phone's connection using Cloudflare's speed servers (4 connections at once, like speedtest.net). " +
+            "On WiFi the result can't be faster than the phone's WiFi link, so the app shows that too. Each test uses roughly 50-300 MB of data."))
 
         val historyBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(historyBox)
         renderSpeedHistory(historyBox)
+    }
+
+    private fun editPlan() {
+        val down = textField("Download (Mbps)", PlanStore.downMbps(this)?.let { fmtMbps(it) } ?: "", hint = "e.g. 20", number = true)
+        val up = textField("Upload (Mbps, optional)", PlanStore.upMbps(this)?.let { fmtMbps(it) } ?: "", number = true)
+        val form = box().apply {
+            setPadding(dp(20), dp(12), dp(20), 0)
+            addView(down.view); addView(up.view)
+        }
+        AlertDialog.Builder(this).setTitle("Package speed")
+            .setMessage("The speed written on your ISP package / bill.")
+            .setView(form)
+            .setPositiveButton("Save") { _, _ ->
+                PlanStore.set(this, down.get().toDoubleOrNull(), up.get().toDoubleOrNull())
+                show("speedtest", push = false)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /**
+     * Compares the measured speed with the package, and explains where the
+     * limit is (the phone's WiFi link, weak signal, or the ISP line).
+     */
+    private fun packageCard(down: Double, up: Double?, link: Pair<Int, Int>?): View? {
+        val plan = PlanStore.downMbps(this)
+        val rows = ArrayList<Row>()
+        val notes = ArrayList<String>()
+        var good: Boolean? = null
+
+        if (plan != null) {
+            val pct = (down / plan * 100).toInt()
+            rows += Row("Package (download)", "${fmtMbps(plan)} Mbps")
+            rows += Row("You got", "%.1f Mbps  (%d%%)".format(down, pct))
+            PlanStore.upMbps(this)?.let { pu -> up?.let { rows += Row("Upload", "%.1f of %s Mbps  (%d%%)".format(it, fmtMbps(pu), (it / pu * 100).toInt())) } }
+            good = when { pct >= 80 -> true; pct >= 50 -> null; else -> false }
+            notes += when {
+                pct >= 80 -> "You are getting the speed you pay for."
+                pct >= 50 -> "Below your package."
+                else -> "Much lower than your package."
+            }
+        }
+        if (link != null) {
+            val (linkMbps, rssi) = link
+            rows += Row("Phone WiFi link", "$linkMbps Mbps")
+            rows += Row("WiFi signal", "$rssi dBm  (" + when {
+                rssi >= -55 -> "excellent"; rssi >= -67 -> "good"; rssi >= -75 -> "weak"; else -> "very weak"
+            } + ")")
+            // real throughput over WiFi is usually about half of the link rate
+            val wifiCap = linkMbps * 0.55
+            val wifiLimited = rssi < -70 || (plan != null && wifiCap < plan * 0.9)
+            if (plan != null && down < plan * 0.8) {
+                notes += if (wifiLimited)
+                    "The limit is most likely your WiFi, not the ISP: this phone's WiFi link can only carry about ${wifiCap.toInt()} Mbps" +
+                        (if (rssi < -70) " because the signal is weak" else "") +
+                        ". Test again close to the router (or from a laptop on a LAN cable) to see the real ISP speed."
+                else
+                    "Your WiFi is strong enough for this package, so the slow speed is most likely from the ISP side. " +
+                        "Run a few tests at different times; if it stays low, show these results to the ISP."
+            } else if (rssi < -70) {
+                notes += "WiFi signal is weak here. Moving closer to the router will make it more stable."
+            }
+        } else if (plan != null && down < plan * 0.8) {
+            notes += "This phone is not on WiFi, so this is the mobile-data speed, not your home internet."
+        }
+        if (plan == null) notes += "Set your package speed below to see if you get what you pay for."
+        if (rows.isEmpty() && notes.isEmpty()) return null
+        return cardView(Card("Package vs real speed", rows, good = good, note = notes.joinToString("\n\n")))
     }
 
     private fun runSpeedTest(phase: TextView, big: TextView, unit: TextView, bar: ProgressBar, resultsBox: LinearLayout, startBtn: Button) {
@@ -1661,9 +1994,11 @@ class MainActivity : AppCompatActivity() {
         var ping: SpeedTest.Ping? = null
         var down: Double? = null
         var up: Double? = null
+        val link = wifiLink()
 
         fun showResults(done: Boolean) {
             resultsBox.removeAllViews()
+            if (done && down != null) packageCard(down!!, up, link)?.let { resultsBox.addView(it) }
             val rows = ArrayList<Row>()
             rows += Row("Download", down?.let { "%.1f Mbps  (%s)".format(it, SpeedTest.rating(it)) } ?: "--")
             rows += Row("Upload", up?.let { "%.1f Mbps  (%s)".format(it, SpeedTest.rating(it)) } ?: "--")
@@ -1709,7 +2044,7 @@ class MainActivity : AppCompatActivity() {
                 unit.text = "Mbps download  ·  %.1f upload".format(up!!)
                 bar.progress = 100
                 showResults(true)
-                saveSpeedResult(down!!, up!!, ping!!.ms)
+                saveSpeedResult(down!!, up!!, ping!!.ms, link)
                 (resultsBox.parent as? LinearLayout)?.let { parent ->
                     (parent.getChildAt(parent.childCount - 1) as? LinearLayout)?.let { renderSpeedHistory(it) }
                 }
@@ -1730,11 +2065,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     // last 10 results, stored on the phone
-    private fun saveSpeedResult(down: Double, up: Double, pingMs: Double) {
+    private fun saveSpeedResult(down: Double, up: Double, pingMs: Double, link: Pair<Int, Int>?) {
         val prefs = getSharedPreferences("speedtest", MODE_PRIVATE)
         val arr = org.json.JSONArray(prefs.getString("history", "[]"))
         val item = org.json.JSONObject()
             .put("t", System.currentTimeMillis()).put("d", down).put("u", up).put("p", pingMs)
+        PlanStore.downMbps(this)?.let { item.put("plan", it) }
+        link?.let { item.put("link", it.first).put("rssi", it.second) }
         val list = mutableListOf(item)
         for (i in 0 until minOf(arr.length(), 9)) list += arr.getJSONObject(i)
         prefs.edit().putString("history", org.json.JSONArray(list).toString()).apply()
@@ -1747,8 +2084,12 @@ class MainActivity : AppCompatActivity() {
         val fmt = java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.UK)
         val rows = (0 until arr.length()).map {
             val o = arr.getJSONObject(it)
+            val d = o.getDouble("d")
+            val plan = o.optDouble("plan", Double.NaN)
+            val pct = if (!plan.isNaN() && plan > 0) "  ·  ${(d / plan * 100).toInt()}%" else ""
+            val wifi = if (o.has("link")) "\nWiFi link ${o.getInt("link")} Mbps, ${o.getInt("rssi")} dBm" else ""
             Row(fmt.format(java.util.Date(o.getLong("t"))),
-                "↓ %.1f  ↑ %.1f Mbps  ·  %.0f ms".format(o.getDouble("d"), o.getDouble("u"), o.getDouble("p")))
+                "↓ %.1f  ↑ %.1f Mbps  ·  %.0f ms%s%s".format(d, o.getDouble("u"), o.getDouble("p"), pct, wifi))
         }
         box.addView(cardView(Card("Previous tests", rows)))
     }

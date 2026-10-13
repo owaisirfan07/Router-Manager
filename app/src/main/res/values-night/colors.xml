@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#7C8CFF</color>
+    <color name="primaryDark">#5866D6</color>
+    <color name="accent">#2ED3B7</color>
+    <color name="background">#111318</color>
+    <color name="cardBackground">#1C1F26</color>
+    <color name="textPrimary">#E8EAF0</color>
+    <color name="textSecondary">#9CA1B3</color>
+    <color name="warning">#FF9466</color>
+    <color name="good">#3DD68C</color>
+    <color name="bad">#FF6B6F</color>
+    <color name="divider">#2A2E38</color>
+</resources>

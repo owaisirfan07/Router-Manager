@@ -55,13 +55,13 @@ class TpLinkClient(private val host: String = "192.168.0.1") {
     }
 
     private fun login(authLines: List<String>) {
-        val pwd = password ?: throw IllegalStateException("TP-Link password set nahi hai")
-        if (authLines.size < 4) throw IllegalStateException("TP-Link ne login info nahi bheji")
+        val pwd = password ?: throw IllegalStateException("TP-Link password not set")
+        if (authLines.size < 4) throw IllegalStateException("TP-Link did not send login info")
         val nonce = authLines[2]
         val charset = authLines[3]
         val s = securityEncode(nonce, orgAuthPwd(pwd), charset)
         val r = post("code=7&asyn=0&id=" + encodeUri(s))
-        if (r.errno != 0) throw IllegalStateException("TP-Link login fail - password check karein")
+        if (r.errno != 0) throw IllegalStateException("TP-Link login failed - check the password")
         session = s
     }
 
@@ -80,7 +80,7 @@ class TpLinkClient(private val host: String = "192.168.0.1") {
             if (s == null) continue // got data without a session?? try again with one
             return parse(r.lines)
         }
-        throw IllegalStateException("TP-Link login nahi ho saka")
+        throw IllegalStateException("Could not log in to the TP-Link")
     }
 
     private fun parse(lines: List<String>): List<Station> {

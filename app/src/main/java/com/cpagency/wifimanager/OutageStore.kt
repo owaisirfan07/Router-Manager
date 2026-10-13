@@ -15,10 +15,10 @@ object OutageStore {
     private const val MAX = 500
 
     enum class Kind(val label: String) {
-        ISP("ISP / fibre ka masla"),
-        INTERNET("ISP se aage internet band"),
-        ROUTER("Main router (Huawei) band"),
-        UNSEEN("App ne nahi dekha - router dobara connect hua")
+        ISP("ISP / fibre problem"),
+        INTERNET("Internet down beyond the ISP"),
+        ROUTER("Main router (Huawei) off"),
+        UNSEEN("Not watched - router reconnected")
     }
 
     data class Outage(

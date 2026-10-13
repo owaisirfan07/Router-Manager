@@ -61,6 +61,11 @@ object Monitor {
         val tpState: String = "",
     )
 
+    private val _tp = MutableStateFlow<List<TpLinkClient.Station>>(emptyList())
+    /** Latest TP-Link device table (live speeds), when reachable. */
+    val tpStations: StateFlow<List<TpLinkClient.Station>> = _tp.asStateFlow()
+    internal fun publishTp(l: List<TpLinkClient.Station>) { _tp.value = l }
+
     private val _live = MutableStateFlow(Live())
     val live: StateFlow<Live> = _live.asStateFlow()
     internal fun publish(l: Live) { _live.value = l }
@@ -113,6 +118,7 @@ class MonitorService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loop: Job? = null
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
     private val tp by lazy { TpLinkClient(Monitor.tpHost(this)) }
 
     // monitor state (kept in memory; outages themselves are saved in OutageStore)
@@ -149,8 +155,15 @@ class MonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
         try {
-            ServiceCompat.startForeground(this, ID_STATUS, statusNotification("Internet monitor chal raha hai"), type)
+            ServiceCompat.startForeground(this, ID_STATUS, statusNotification("Internet monitor is running"), type)
         } catch (_: Exception) { stopSelf(); return START_NOT_STICKY }
+        // keep the CPU awake - otherwise checks stop when the screen is off
+        if (wakeLock?.isHeld != true) {
+            wakeLock = (getSystemService(POWER_SERVICE) as android.os.PowerManager)
+                .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "RouterManager:monitor").apply {
+                    setReferenceCounted(false); acquire()
+                }
+        }
         if (loop?.isActive != true) loop = scope.launch {
             while (isActive) {
                 try { runTick() } catch (_: Exception) { }
@@ -160,13 +173,16 @@ class MonitorService : Service() {
         return START_STICKY
     }
 
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    override fun onDestroy() {
+        try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) { }
+        scope.cancel(); super.onDestroy()
+    }
 
     private suspend fun runTick() {
         tick++
         val now = System.currentTimeMillis()
         val wifi = NetUtil.wifiNetwork(this)
-        if (wifi == null) { away(now, "Phone WiFi par nahi hai"); return }
+        if (wifi == null) { away(now, "Phone is not on WiFi"); return }
 
         val r = scope.async { NetUtil.probe(HUAWEI, 80, 2000, wifi) }
         val g = scope.async { NetUtil.probe("8.8.8.8", 53, 2500, wifi) }
@@ -178,7 +194,7 @@ class MonitorService : Service() {
 
         val internetOk = googleMs != null || cloudMs != null
         val home = routerMs != null || tpState.startsWith("OK")
-        if (!home) { away(now, "Router se rabta nahi (phone ghar par nahi, ya bijli band)"); return }
+        if (!home) { away(now, "Router not reachable (phone away from home, or power cut)"); return }
 
         // came back after a gap the app didn't watch? check if the router reconnected meanwhile
         val gap = if (lastActiveAt > 0) now - lastActiveAt else 0
@@ -186,6 +202,8 @@ class MonitorService : Service() {
 
         if (routerMs != null && (tick % 20 == 1L || gap > 120_000)) refreshWan(now, gap, internetOk)
         if (routerMs != null && tick % 4 == 1L) huaweiCounters(now)
+        if (routerMs != null && tick % 8 == 1L) huaweiNewDevices()
+        if (routerMs != null && now - FibreStore.lastAt(this) >= 15 * 60_000L) fibreSample(now)
 
         if (internetOk) {
             lastOnlineAt = now
@@ -194,7 +212,7 @@ class MonitorService : Service() {
                 val end = if (gap > 120_000) lastFailAt.coerceAtLeast(o.start) else now
                 val closed = o.copy(end = end, approx = o.approx || gap > 120_000, reason = o.reason.ifBlank { reason })
                 OutageStore.add(this, closed); OutageStore.setOpen(this, null)
-                alert("Internet wapas aa gaya", "${o.kind.label} - ${durText(closed.durationMs)} band raha")
+                alert("Internet is back", "${o.kind.label} - down for ${durText(closed.durationMs)}")
             }
             reason = ""
             publish(Monitor.Status.ONLINE, null, now, routerMs, ispMs, googleMs, cloudMs, tpState)
@@ -216,7 +234,7 @@ class MonitorService : Service() {
             if (open == null) {
                 val o = OutageStore.Outage(firstFailAt, 0, kind, reason)
                 OutageStore.setOpen(this, o)
-                alert("Internet band hai", "${kind.label}${if (reason.isNotBlank()) " - $reason" else ""}")
+                alert("Internet is down", "${kind.label}${if (reason.isNotBlank()) " - $reason" else ""}")
             } else if (open.reason != reason && reason.isNotBlank()) {
                 OutageStore.setOpen(this, open.copy(reason = reason))
             }
@@ -228,7 +246,7 @@ class MonitorService : Service() {
 
     private fun away(now: Long, why: String) {
         Monitor.publish(Monitor.live.value.copy(status = Monitor.Status.AWAY, reason = why, updatedAt = now))
-        updateStatus("Monitor ruka hua - $why")
+        updateStatus("Monitor paused - $why")
     }
 
     private fun publish(st: Monitor.Status, kind: OutageStore.Kind?, since: Long, routerMs: Long?, ispMs: Long?,
@@ -237,8 +255,8 @@ class MonitorService : Service() {
             ispLearned != null, System.currentTimeMillis(), tpState))
         val usage = UsageStore.current(this)
         updateStatus(
-            if (st == Monitor.Status.ONLINE) "Internet online · ${(googleMs ?: cloudMs) ?: "--"} ms · is mahine ${UsageStore.fmt(usage.total)}"
-            else "Internet band · ${kind?.label ?: ""}"
+            if (st == Monitor.Status.ONLINE) "Internet online · ${(googleMs ?: cloudMs) ?: "--"} ms · this cycle ${UsageStore.fmt(usage.total)}"
+            else "Internet down · ${kind?.label ?: ""}"
         )
     }
 
@@ -257,15 +275,63 @@ class MonitorService : Service() {
     }
 
     private fun tpPoll(): String {
-        val pass = Monitor.tpPassword(this) ?: return "TP-Link password set nahi"
+        val pass = Monitor.tpPassword(this) ?: return "TP-Link password not set"
         return try {
             tp.setPassword(pass)
             val list = tp.stations()
             UsageStore.addTpLink(this, list)
+            Monitor.publishTp(list)
+            if (DeviceStore.alertsOn(this)) {
+                DeviceStore.newDevices(this, "tplink", list.filter { it.online }.map { it.mac }).forEach { mac ->
+                    val st = list.first { it.mac == mac }
+                    newDeviceAlert(DeviceStore.display(this, mac, st.name), mac, "TP-Link", "tpdev:$mac")
+                }
+            }
             "OK ${list.count { it.online }} devices"
         } catch (e: Exception) {
-            "TP-Link: ${e.message ?: "nahi mila"}"
+            "TP-Link: ${e.message ?: "not reachable"}"
         }
+    }
+
+    /** Alerts when a device the app has never seen joins the Huawei router. */
+    private fun huaweiNewDevices() {
+        if (!DeviceStore.alertsOn(this)) return
+        try {
+            val c = RouterSession.get(this) ?: return
+            val devs = c.page("html/bbsp/common/GetLanUserDevInfo.asp", maxAgeMs = 0).all("USERDevice")
+                .filter { it["MacAddr"].isNotBlank() && it["DevStatus"].equals("Online", true) }
+            DeviceStore.newDevices(this, "huawei", devs.map { it["MacAddr"] }).forEach { mac ->
+                val d = devs.firstOrNull { it["MacAddr"].lowercase().replace('-', ':') == mac }
+                val via = if (d?.get("PortType") == "WIFI") "Huawei WiFi" else "Huawei cable"
+                newDeviceAlert(DeviceStore.display(this, mac, d?.get("HostName")), mac, via, "device:${d?.get("MacAddr") ?: mac}")
+            }
+        } catch (_: Exception) { }
+    }
+
+    /** Saves the fibre Rx/Tx power every 15 minutes for the history graph. */
+    private fun fibreSample(now: Long) {
+        try {
+            val c = RouterSession.get(this) ?: return
+            val o = c.page("html/amp/opticinfo/opticinfo.asp", maxAgeMs = 0).first("stOpticInfo") ?: return
+            val rx = o["revOpticPower"].trim().toDoubleOrNull() ?: return
+            FibreStore.add(this, FibreStore.Sample(now, rx, o["transOpticPower"].trim().toDoubleOrNull(), o["temperature"].trim().toDoubleOrNull()))
+        } catch (_: Exception) { }
+    }
+
+    private fun newDeviceAlert(name: String, mac: String, via: String, open: String) {
+        val pi = PendingIntent.getActivity(
+            this, mac.hashCode(), Intent(this, MainActivity::class.java).putExtra("open", open).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val n = NotificationCompat.Builder(this, CH_ALERT)
+            .setSmallIcon(android.R.drawable.stat_notify_more)
+            .setContentTitle("New device connected")
+            .setContentText("$name on $via")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$name\n$mac\nConnected to $via. Tap to see it or block it."))
+            .setContentIntent(pi).setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        try { getSystemService(NotificationManager::class.java).notify(1000 + (mac.hashCode() and 0xfff), n) } catch (_: SecurityException) { }
     }
 
     private fun huaweiCounters(now: Long) {
@@ -284,6 +350,7 @@ class MonitorService : Service() {
             val c = RouterSession.get(this) ?: return
             val d = c.page("html/bbsp/common/wan_list_info.asp", "html/bbsp/common/wan_list.asp", maxAgeMs = 0)
             val wan = Custom.internetWan(d) ?: return
+            wan["Username"].trim().takeIf { it.isNotBlank() }?.let { PlanStore.setAccount(this, it) }
             val hosts = ArrayList<Pair<String, Int>>()
             wan["dnsstr"].split(',', ' ').map { it.trim() }.filter { it.count { ch -> ch == '.' } == 3 }.forEach { hosts += it to 53 }
             wan["Gateway"].trim().takeIf { it.count { ch -> ch == '.' } == 3 }?.let { hosts += it to 80; hosts += it to 53 }
@@ -292,7 +359,7 @@ class MonitorService : Service() {
             if (gap > 120_000 && internetOk && uptimeS != null && uptimeS * 1000 < gap) {
                 val reconnectAt = now - uptimeS * 1000
                 OutageStore.add(this, OutageStore.Outage(reconnectAt, reconnectAt, OutageStore.Kind.UNSEEN,
-                    "Router ka internet ${java.text.SimpleDateFormat("h:mm a", java.util.Locale.US).format(java.util.Date(reconnectAt))} par dobara juda", approx = true))
+                    "Router reconnected to the internet at ${java.text.SimpleDateFormat("h:mm a", java.util.Locale.US).format(java.util.Date(reconnectAt))}", approx = true))
             }
         } catch (_: Exception) { }
     }
@@ -305,10 +372,10 @@ class MonitorService : Service() {
             val wan = Custom.internetWan(d)
             val los = d.first("stOpticInfo")?.get("LosStatus")?.trim()
             when {
-                los == "1" -> "Fibre signal nahi aa raha (LOS) - fibre cable ya ISP ki taraf masla"
+                los == "1" -> "No fibre signal (LOS) - fibre cable or ISP side problem"
                 wan != null && wan["ConnectionStatus"] != "Connected" ->
-                    "Router ISP se connect nahi ho pa raha" + (wan["LastConnErr"].takeIf { it.isNotBlank() && it != "ERROR_NONE" }?.let { " ($it)" } ?: "")
-                wan != null -> "Router ISP se connected hai magar internet nahi chal raha - ISP ka masla"
+                    "Router cannot connect to the ISP" + (wan["LastConnErr"].takeIf { it.isNotBlank() && it != "ERROR_NONE" }?.let { " ($it)" } ?: "")
+                wan != null -> "Router is connected to the ISP but there is no internet - ISP problem"
                 else -> ""
             }
         }
@@ -316,7 +383,7 @@ class MonitorService : Service() {
 
     private fun durText(ms: Long): String {
         val m = ms / 60_000
-        return when { m < 1 -> "1 minute se kam"; m < 60 -> "$m minute"; else -> "${m / 60} ghante ${m % 60} minute" }
+        return when { m < 1 -> "less than a minute"; m < 60 -> "$m min"; else -> "${m / 60} h ${m % 60} min" }
     }
 
     private fun openApp(): PendingIntent = PendingIntent.getActivity(

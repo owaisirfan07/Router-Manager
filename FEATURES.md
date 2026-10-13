@@ -109,3 +109,14 @@ the standard Huawei format. Please check them on the real router:
 - **WLAN Information → WiFi clients and nearby networks** (`getassociateddeviceinfo.asp`, `getneighbourAPinfo.asp`)
 
 If one of them shows wrong/empty values, send a new HAR with that page open and it can be fixed quickly.
+
+## New in v8
+- **New device alert** – notification when a device the app has never seen joins the Huawei or TP-Link (on/off in Devices → Alerts).
+- **Device nicknames** – rename any device; the name is saved only on this phone.
+- **TP-Link devices in the Devices tab** – view only, with live speed (Mbps) and data this cycle. Nothing is ever changed on the TP-Link.
+- **Fibre signal history** – Rx power saved every 15 min for 90 days, daily chart, 7-day trend.
+- **ISP complaint** – one tap shares a ready message (time, duration, cause, fibre Rx, PPPoE account) to WhatsApp/SMS/email.
+- **Speed vs package** – set your package speed; each test shows % of package and whether WiFi (link speed / signal) or the ISP is the limit.
+- **Auto login** with the saved details (Settings → Log out turns it off).
+- **Dark mode** – Settings → Theme (System / Light / Dark).
+- Cleaner Home screen; all text in English.
